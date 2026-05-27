@@ -1,0 +1,38 @@
+## Meson.
+/worker/out
+/worker/subprojects/*
+!/worker/subprojects/*.wrap
+!/worker/subprojects/.clang-tidy
+
+## Node.
+/node_modules
+/node/lib
+# flatc generated files.
+/node/src/fbs
+
+## Rust.
+/rust/examples-frontend/*/node_modules
+/rust/examples-frontend/*/package-lock.json
+/target
+
+## Worker.
+/worker/scripts/node_modules
+# Flatc generated files.
+/worker/include/FBS
+/worker/prebuild
+# Python invoke.
+/worker/pip_invoke
+# Build artifacts.
+/worker/**/Debug
+/worker/**/Release
+# clang-fuzzer stuff is too big.
+/worker/deps/clang-fuzzer
+# Ignore all fuzzer generated test inputs.
+/worker/fuzzer/new-corpus/*
+!/worker/fuzzer/new-corpus/.placeholder
+
+## Others.
+/coverage
+/.cache
+# Packaged module.
+*.tgz
