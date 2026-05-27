@@ -57,7 +57,7 @@ local_include_directories = declare_dependency(
 
 libwebrtc = library(
   'libwebrtc',
-  libwebrtc_sources,
+  libwebrtc_sources + [flatbuffers_generator],
   dependencies: [
     local_include_directories,
     openssl_proj.get_variable('openssl_dep'),

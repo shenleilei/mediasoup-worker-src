@@ -305,7 +305,7 @@ libmediasoup_worker = library(
   install: true,
   install_tag: 'libmediasoup-worker',
   dependencies: dependencies,
-  sources: common_sources,
+  sources: common_sources + [flatbuffers_generator],
   include_directories: include_directories('include'),
   cpp_args: cpp_args,
   link_whole: link_whole,
@@ -317,7 +317,7 @@ executable(
   install: true,
   install_tag: 'mediasoup-worker',
   dependencies: dependencies,
-  sources: common_sources + ['src/main.cpp'],
+  sources: common_sources + [flatbuffers_generator, 'src/main.cpp'],
   include_directories: include_directories('include'),
   cpp_args: cpp_args + ['-DMS_EXECUTABLE'],
 )
@@ -376,7 +376,7 @@ mediasoup_worker_test = executable(
   dependencies: dependencies + [
     catch2_proj.get_variable('catch2_dep'),
   ],
-  sources: common_sources + test_sources,
+  sources: common_sources + [flatbuffers_generator] + test_sources,
   include_directories: include_directories(
     'include',
     'test/include',
@@ -401,7 +401,7 @@ mediasoup_worker_test_asan = executable(
   dependencies: dependencies + [
     catch2_proj.get_variable('catch2_dep'),
   ],
-  sources: common_sources + test_sources,
+  sources: common_sources + [flatbuffers_generator] + test_sources,
   include_directories: include_directories(
     'include',
     'test/include',
