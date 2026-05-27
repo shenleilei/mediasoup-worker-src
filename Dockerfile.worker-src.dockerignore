@@ -1,0 +1,12 @@
+.git
+.cache
+coverage
+node/lib
+node_modules
+target
+worker/include/FBS
+worker/out
+worker/pip_invoke
+worker/prebuild
+worker/scripts/node_modules
+*.tgz

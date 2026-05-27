@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1
+
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG UBUNTU_MIRROR=http://mirrors.aliyun.com/ubuntu
+ARG NODE_VERSION=20.11.1
+ARG NODE_ARCH=linux-x64
+ARG NODE_DIST_MIRROR=https://mirrors.aliyun.com/nodejs-release
+ARG BUILD_WORKER=0
+
+LABEL org.opencontainers.image.title="mediasoup-worker-src build environment"
+LABEL org.opencontainers.image.description="Local mediasoup-worker-src tree with C++ worker build dependencies"
+
+RUN sed -i \
+		-e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+		-e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+		/etc/apt/sources.list \
+	&& apt-get update \
+	&& apt-get install --yes --no-install-recommends \
+		bash \
+		bash-completion \
+		build-essential \
+		ca-certificates \
+		clang \
+		curl \
+		file \
+		git \
+		libgss-dev \
+		libssl-dev \
+		libxml2-dev \
+		make \
+		pkg-config \
+		python-is-python3 \
+		python3 \
+		python3-pip \
+		python3-setuptools \
+		python3-wheel \
+		wget \
+		xz-utils \
+		zlib1g-dev \
+	&& curl -fsSL "${NODE_DIST_MIRROR}/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.tar.xz" \
+		-o /tmp/node.tar.xz \
+	&& mkdir -p /opt/node \
+	&& tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1 \
+	&& ln -sf /opt/node/bin/node /usr/local/bin/node \
+	&& ln -sf /opt/node/bin/npm /usr/local/bin/npm \
+	&& ln -sf /opt/node/bin/npx /usr/local/bin/npx \
+	&& rm -f /tmp/node.tar.xz \
+	&& rm -rf /var/lib/apt/lists/*
+
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel invoke
+
+ENV LANG=C.UTF-8
+ENV CC=clang
+ENV CXX=clang++
+ENV MEDIASOUP_LOCAL_DEV=true
+ENV KEEP_BUILD_ARTIFACTS=1
+
+WORKDIR /opt/mediasoup-worker-src
+COPY . /opt/mediasoup-worker-src
+
+# Preinstall the same local Python build tooling that worker/tasks.py expects.
+RUN python3 -m pip install --upgrade --no-user --target /opt/mediasoup-worker-src/worker/pip_invoke invoke \
+	&& cd /opt/mediasoup-worker-src/worker \
+	&& PYTHONPATH=/opt/mediasoup-worker-src/worker/pip_invoke python3 -m invoke meson-ninja \
+	&& if [ "${BUILD_WORKER}" = "1" ]; then \
+		PYTHONPATH=/opt/mediasoup-worker-src/worker/pip_invoke python3 -m invoke mediasoup-worker; \
+	fi
+
+WORKDIR /opt/mediasoup-worker-src/worker
+
+CMD ["bash"]

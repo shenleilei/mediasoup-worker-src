@@ -141,6 +141,7 @@ namespace RTC
 		}
 
 		this->streamMetadataByConsumerSsrc[metadata.consumerSsrc] = metadata;
+		(void)EnsureMetadataAnnounced(metadata);
 		MS_DEBUG_DEV_STD(
 		  "probe metadata registered [consumerId:%s, producerId:%s, codecMime:%s, consumerSsrc:%" PRIu32 ", producerSsrc:%" PRIu32 ", isRtx:%u, pairedConsumerSsrc:%" PRIu32 ", pairedProducerSsrc:%" PRIu32 "]",
 		  metadata.consumerId.c_str(),
