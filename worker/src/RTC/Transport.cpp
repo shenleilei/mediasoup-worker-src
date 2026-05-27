@@ -3,6 +3,7 @@
 // #define MS_LOG_DEV_LEVEL 3
 
 #include "RTC/Transport.hpp"
+#include "RTC/ProbeEgressAdapter.hpp"
 #ifdef MS_LIBURING_SUPPORTED
 #include "DepLibUring.hpp"
 #endif
@@ -26,7 +27,6 @@
 #include <libwebrtc/modules/rtp_rtcp/include/rtp_rtcp_defines.h> // webrtc::RtpPacketSendInfo
 #include <iterator>                                              // std::ostream_iterator
 #include <map>                                                   // std::multimap
-
 namespace RTC
 {
 	static const size_t DefaultSctpSendBufferSize{ 262144 }; // 2^18.
@@ -167,6 +167,13 @@ namespace RTC
 	void Transport::CloseProducersAndConsumers()
 	{
 		MS_TRACE();
+		MS_ERROR_STD(
+		  "CloseProducersAndConsumers start [transportId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
+		  this->id.c_str(),
+		  this->mapProducers.size(),
+		  this->mapConsumers.size(),
+		  this->mapDataProducers.size(),
+		  this->mapDataConsumers.size());
 
 		// This method is called by the Router and must notify him about all Producers
 		// and Consumers that we are gonna close.
@@ -190,6 +197,10 @@ namespace RTC
 		for (auto& kv : this->mapConsumers)
 		{
 			auto* consumer = kv.second;
+			MS_ERROR_STD(
+			  "CloseProducersAndConsumers notifying consumer close [transportId:%s consumerId:%s]",
+			  this->id.c_str(),
+			  consumer->id.c_str());
 
 			// Notify the listener.
 			this->listener->OnTransportConsumerClosed(this, consumer);
@@ -199,6 +210,7 @@ namespace RTC
 		this->mapConsumers.clear();
 		this->mapSsrcConsumer.clear();
 		this->mapRtxSsrcConsumer.clear();
+		MS_ERROR_STD("CloseProducersAndConsumers consumers cleared [transportId:%s]", this->id.c_str());
 
 		// Delete all DataProducers.
 		for (auto& kv : this->mapDataProducers)
@@ -223,6 +235,7 @@ namespace RTC
 			delete dataConsumer;
 		}
 		this->mapDataConsumers.clear();
+		MS_ERROR_STD("CloseProducersAndConsumers done [transportId:%s]", this->id.c_str());
 	}
 
 	void Transport::ListenServerClosed()
@@ -1306,6 +1319,10 @@ namespace RTC
 
 				// This may throw.
 				RTC::Consumer* consumer = GetConsumerById(body->consumerId()->str());
+				MS_ERROR_STD(
+				  "TRANSPORT_CLOSE_CONSUMER start [transportId:%s consumerId:%s]",
+				  this->id.c_str(),
+				  consumer->id.c_str());
 
 				// Remove it from the maps.
 				this->mapConsumers.erase(consumer->id);
@@ -1328,13 +1345,23 @@ namespace RTC
 
 				// Notify the listener.
 				this->listener->OnTransportConsumerClosed(this, consumer);
+				MS_ERROR_STD(
+				  "TRANSPORT_CLOSE_CONSUMER notified listener [transportId:%s consumerId:%s]",
+				  this->id.c_str(),
+				  consumer->id.c_str());
 
 				MS_DEBUG_DEV("Consumer closed [consumerId:%s]", consumer->id.c_str());
 
 				// Delete it.
 				delete consumer;
+				MS_ERROR_STD(
+				  "TRANSPORT_CLOSE_CONSUMER deleted consumer [transportId:%s]",
+				  this->id.c_str());
 
 				request->Accept();
+				MS_ERROR_STD(
+				  "TRANSPORT_CLOSE_CONSUMER accepted [transportId:%s]",
+				  this->id.c_str());
 
 				// This may be the latest active Consumer with BWE. If so we have to stop
 				// probation.
@@ -2454,6 +2481,9 @@ namespace RTC
 		// Update abs-send-time if present.
 		packet->UpdateAbsSendTime(DepLibUV::GetTimeMs());
 
+		auto* probeEgressAdapter =
+		  this->shared ? this->shared->probeEgressAdapter : nullptr;
+
 		// Update transport wide sequence number if present.
 		// clang-format off
 		if (
@@ -2516,7 +2546,7 @@ namespace RTC
 
 			SendRtpPacket(consumer, packet, cb);
 #else
-			const auto* cb = new onSendCallback(
+			auto* cb = new onSendCallback(
 			  [tccClientWeakPtr, packetInfo](bool sent)
 			  {
 				  if (sent)
@@ -2538,6 +2568,14 @@ namespace RTC
 			SendRtpPacket(consumer, packet);
 		}
 
+		if (probeEgressAdapter && consumer)
+		{
+			probeEgressAdapter->ExportPacket(
+			  consumer,
+			  packet,
+			  RTC::ProbeEgressAdapter::PacketEventType::MEDIA);
+		}
+
 		this->sendRtpTransmission.Update(packet);
 	}
 
@@ -2547,6 +2585,9 @@ namespace RTC
 
 		// Update abs-send-time if present.
 		packet->UpdateAbsSendTime(DepLibUV::GetTimeMs());
+
+		auto* probeEgressAdapter =
+		  this->shared ? this->shared->probeEgressAdapter : nullptr;
 
 		// Update transport wide sequence number if present.
 		// clang-format off
@@ -2605,7 +2646,7 @@ namespace RTC
 
 			SendRtpPacket(consumer, packet, cb);
 #else
-			const auto* cb = new onSendCallback(
+			auto* cb = new onSendCallback(
 			  [tccClientWeakPtr, packetInfo](bool sent)
 			  {
 				  if (sent)
@@ -2625,6 +2666,14 @@ namespace RTC
 		else
 		{
 			SendRtpPacket(consumer, packet);
+		}
+
+		if (probeEgressAdapter && consumer)
+		{
+			probeEgressAdapter->ExportPacket(
+			  consumer,
+			  packet,
+			  RTC::ProbeEgressAdapter::PacketEventType::RETRANSMISSION);
 		}
 
 		this->sendRtxTransmission.Update(packet);
@@ -2669,6 +2718,10 @@ namespace RTC
 	inline void Transport::OnConsumerProducerClosed(RTC::Consumer* consumer)
 	{
 		MS_TRACE();
+		MS_ERROR_STD(
+		  "Transport::OnConsumerProducerClosed start [transportId:%s consumerId:%s]",
+		  this->id.c_str(),
+		  consumer->id.c_str());
 
 		// Remove it from the maps.
 		this->mapConsumers.erase(consumer->id);
@@ -2691,15 +2744,25 @@ namespace RTC
 
 		// Notify the listener.
 		this->listener->OnTransportConsumerProducerClosed(this, consumer);
+		MS_ERROR_STD(
+		  "Transport::OnConsumerProducerClosed notified listener [transportId:%s consumerId:%s]",
+		  this->id.c_str(),
+		  consumer->id.c_str());
 
 		// Delete it.
 		delete consumer;
+		MS_ERROR_STD(
+		  "Transport::OnConsumerProducerClosed deleted consumer [transportId:%s]",
+		  this->id.c_str());
 
 		// This may be the latest active Consumer with BWE. If so we have to stop probation.
 		if (this->tccClient)
 		{
 			ComputeOutgoingDesiredBitrate(/*forceBitrate*/ true);
 		}
+		MS_ERROR_STD(
+		  "Transport::OnConsumerProducerClosed done [transportId:%s]",
+		  this->id.c_str());
 	}
 
 	inline void Transport::OnDataProducerMessageReceived(

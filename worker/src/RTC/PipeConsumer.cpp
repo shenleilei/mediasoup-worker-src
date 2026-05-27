@@ -1,7 +1,8 @@
 #define MS_CLASS "RTC::PipeConsumer"
-// #define MS_LOG_DEV_LEVEL 3
+#define MS_LOG_DEV_LEVEL 2
 
 #include "RTC/PipeConsumer.hpp"
+#include "RTC/ProbeEgressAdapter.hpp"
 #include "Logger.hpp"
 #include "MediaSoupErrors.hpp"
 #include "RTC/Codecs/Tools.hpp"
@@ -164,7 +165,9 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		// Do nothing.
+		MS_WARN_DEV(
+		  "producer signaled a new RTP stream for PipeConsumer; next packets may require re-sync [consumerId:%s]",
+		  this->id.c_str());
 	}
 
 	void PipeConsumer::ProducerRtpStreamScore(
@@ -254,6 +257,14 @@ namespace RTC
 		// the packet.
 		if (syncRequired && this->keyFrameSupported && !packet->IsKeyFrame())
 		{
+			MS_WARN_DEV(
+			  "pipe consumer dropping packet while waiting for sync key frame [consumerId:%s, mappedSsrc:%" PRIu32
+			  ", consumerSsrc:%" PRIu32 ", origSeq:%" PRIu16 ", payloadType:%" PRIu8 "]",
+			  this->id.c_str(),
+			  packet->GetSsrc(),
+			  ssrc,
+			  packet->GetSequenceNumber(),
+			  payloadType);
 #ifdef MS_RTC_LOGGER_RTP
 			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::NOT_A_KEYFRAME);
 #endif
@@ -272,6 +283,18 @@ namespace RTC
 				MS_DEBUG_TAG(rtp, "sync key frame received");
 			}
 
+			MS_WARN_DEV(
+			  "pipe consumer seq sync [consumerId:%s, mappedSsrc:%" PRIu32 ", consumerSsrc:%" PRIu32
+			  ", origSeq:%" PRIu16 ", syncBase:%" PRIu16 ", maxInputBefore:%" PRIu16
+			  ", maxOutputBefore:%" PRIu16 "]",
+			  this->id.c_str(),
+			  packet->GetSsrc(),
+			  ssrc,
+			  packet->GetSequenceNumber(),
+			  static_cast<uint16_t>(packet->GetSequenceNumber() - 1),
+			  rtpSeqManager.GetMaxInput(),
+			  rtpSeqManager.GetMaxOutput());
+
 			rtpSeqManager.Sync(packet->GetSequenceNumber() - 1);
 
 			syncRequired = false;
@@ -281,6 +304,21 @@ namespace RTC
 		uint16_t seq;
 
 		rtpSeqManager.Input(packet->GetSequenceNumber(), seq);
+
+		const int32_t sendSeqDelta = static_cast<int32_t>(
+			static_cast<int16_t>(seq - packet->GetSequenceNumber()));
+		if (std::abs(sendSeqDelta) > 32)
+		{
+			MS_WARN_DEV(
+			  "pipe consumer seq remap [consumerId:%s, mappedSsrc:%" PRIu32 ", consumerSsrc:%" PRIu32
+			  ", origSeq:%" PRIu16 ", sendSeq:%" PRIu16 ", delta:%" PRIi32 "]",
+			  this->id.c_str(),
+			  packet->GetSsrc(),
+			  ssrc,
+			  packet->GetSequenceNumber(),
+			  seq,
+			  sendSeqDelta);
+		}
 
 		// Save original packet fields.
 		auto origSsrc = packet->GetSsrc();
@@ -522,6 +560,9 @@ namespace RTC
 
 		for (auto& kv : this->mapRtpStreamSyncRequired)
 		{
+			MS_WARN_DEV(
+			  "marking pipe consumer stream sync-required on transport connected [consumerId:%s]",
+			  this->id.c_str());
 			kv.second = true;
 		}
 
@@ -562,6 +603,9 @@ namespace RTC
 
 		for (auto& kv : this->mapRtpStreamSyncRequired)
 		{
+			MS_WARN_DEV(
+			  "marking pipe consumer stream sync-required on consumer resumed [consumerId:%s]",
+			  this->id.c_str());
 			kv.second = true;
 		}
 
@@ -669,6 +713,36 @@ namespace RTC
 			this->mapSsrcRtpStream[encoding.ssrc]            = rtpStream;
 			this->mapRtpStreamSyncRequired[rtpStream]        = false;
 			this->mapRtpStreamRtpSeqManager[rtpStream];
+
+			if (this->shared && this->shared->probeEgressAdapter)
+			{
+				RTC::ProbeEgressAdapter::StreamMetadata metadata;
+				metadata.consumerId   = this->id;
+				metadata.producerId   = this->producerId;
+				metadata.codecMime    = mediaCodec->mimeType.ToString();
+				metadata.mediaKind    = this->kind;
+				metadata.consumerSsrc = encoding.ssrc;
+				metadata.producerSsrc = consumableEncoding.ssrc;
+				metadata.payloadType  = mediaCodec->payloadType;
+				metadata.clockRate    = mediaCodec->clockRate;
+
+				this->shared->probeEgressAdapter->RegisterConsumerSsrc(metadata);
+
+				if (rtxCodec && encoding.hasRtx)
+				{
+					RTC::ProbeEgressAdapter::StreamMetadata rtxMetadata = metadata;
+					rtxMetadata.codecMime = rtxCodec->mimeType.ToString();
+					rtxMetadata.consumerSsrc = encoding.rtx.ssrc;
+					rtxMetadata.producerSsrc = consumableEncoding.rtx.ssrc;
+					rtxMetadata.payloadType = rtxCodec->payloadType;
+					rtxMetadata.isRtx = true;
+					rtxMetadata.pairedConsumerSsrc = metadata.consumerSsrc;
+					rtxMetadata.pairedProducerSsrc = metadata.producerSsrc;
+					rtxMetadata.pairedPayloadType = metadata.payloadType;
+					rtxMetadata.apt = metadata.payloadType;
+					this->shared->probeEgressAdapter->RegisterConsumerSsrc(rtxMetadata);
+				}
+			}
 		}
 	}
 

@@ -1,5 +1,5 @@
 #define MS_CLASS "RTC::RtpStreamRecv"
-// #define MS_LOG_DEV_LEVEL 3
+#define MS_LOG_DEV_LEVEL 2
 
 #include "RTC/RtpStreamRecv.hpp"
 #include "Logger.hpp"
@@ -271,7 +271,12 @@ namespace RTC
 		// Call the parent method.
 		if (!RTC::RtpStream::ReceiveStreamPacket(packet))
 		{
-			MS_WARN_TAG(rtp, "packet discarded");
+			MS_WARN_DEV(
+			  "producer recv packet discarded before codec/NACK handling [ssrc:%" PRIu32 ", seq:%" PRIu16
+			  ", pt:%" PRIu8 "]",
+			  packet->GetSsrc(),
+			  packet->GetSequenceNumber(),
+			  packet->GetPayloadType());
 
 			return false;
 		}
@@ -391,11 +396,12 @@ namespace RTC
 		// If not a valid packet ignore it.
 		if (!RTC::RtpStream::UpdateSeq(packet))
 		{
-			MS_WARN_TAG(
-			  rtx,
-			  "invalid RTX packet [ssrc:%" PRIu32 ", seq:%" PRIu16 "]",
+			MS_WARN_DEV(
+			  "producer recv invalid RTX packet after decode [mediaSsrc:%" PRIu32 ", mediaSeq:%" PRIu16
+			  ", rtxSsrc:%" PRIu32 "]",
 			  packet->GetSsrc(),
-			  packet->GetSequenceNumber());
+			  packet->GetSequenceNumber(),
+			  this->params.rtxSsrc);
 
 			return false;
 		}
@@ -475,6 +481,8 @@ namespace RTC
 			this->packetsLost = 0u;
 		}
 
+		const uint32_t ingressPackets = this->mediaTransmissionCounter.GetPacketCount();
+
 		// Calculate Fraction Lost.
 		const uint32_t expectedInterval = expected - this->expectedPrior;
 
@@ -486,6 +494,30 @@ namespace RTC
 		this->receivedPrior = this->mediaTransmissionCounter.GetPacketCount();
 
 		const int32_t lostInterval = expectedInterval - receivedInterval;
+
+		if (
+			expectedInterval > 0u &&
+			(
+				this->packetsLost > prevPacketsLost + 32u ||
+				lostInterval > 32
+			)
+		)
+		{
+			MS_WARN_DEV(
+			  "producer recv loss window jump [ssrc:%" PRIu32 ", expected:%" PRIu32 ", received:%" PRIu32
+			  ", packetsLostBefore:%" PRIu32 ", packetsLostNow:%" PRIu32 ", expectedInterval:%" PRIu32
+			  ", receivedInterval:%" PRIu32 ", lostInterval:%" PRIi32 ", nackCount:%zu, nackPacketCount:%zu]",
+			  GetSsrc(),
+			  expected,
+			  ingressPackets,
+			  prevPacketsLost,
+			  this->packetsLost,
+			  expectedInterval,
+			  receivedInterval,
+			  lostInterval,
+			  this->nackCount,
+			  this->nackPacketCount);
+		}
 
 		if (expectedInterval == 0 || lostInterval <= 0)
 		{
@@ -884,6 +916,15 @@ namespace RTC
 		  this->params.ssrc,
 		  seqNumbers[0],
 		  seqNumbers.size());
+
+		if (seqNumbers.size() >= 16u)
+		{
+			MS_WARN_DEV(
+			  "producer recv large NACK burst [ssrc:%" PRIu32 ", firstSeq:%" PRIu16 ", count:%zu]",
+			  this->params.ssrc,
+			  seqNumbers[0],
+			  seqNumbers.size());
+		}
 
 		RTC::RTCP::FeedbackRtpNackPacket packet(0, GetSsrc());
 

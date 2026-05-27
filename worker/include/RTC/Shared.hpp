@@ -6,17 +6,21 @@
 
 namespace RTC
 {
+	class ProbeEgressAdapter;
+
 	class Shared
 	{
 	public:
 		explicit Shared(
 		  ChannelMessageRegistrator* channelMessageRegistrator,
-		  Channel::ChannelNotifier* channelNotifier);
+		  Channel::ChannelNotifier* channelNotifier,
+		  ProbeEgressAdapter* probeEgressAdapter = nullptr);
 		~Shared();
 
 	public:
 		ChannelMessageRegistrator* channelMessageRegistrator{ nullptr };
 		Channel::ChannelNotifier* channelNotifier{ nullptr };
+		ProbeEgressAdapter* probeEgressAdapter{ nullptr };
 	};
 } // namespace RTC
 

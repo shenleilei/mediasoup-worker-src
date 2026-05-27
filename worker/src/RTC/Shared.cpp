@@ -3,12 +3,17 @@
 
 #include "RTC/Shared.hpp"
 #include "Logger.hpp"
+#include "RTC/ProbeEgressAdapter.hpp"
 
 namespace RTC
 {
 	Shared::Shared(
-	  ChannelMessageRegistrator* channelMessageRegistrator, Channel::ChannelNotifier* channelNotifier)
-	  : channelMessageRegistrator(channelMessageRegistrator), channelNotifier(channelNotifier)
+	  ChannelMessageRegistrator* channelMessageRegistrator,
+	  Channel::ChannelNotifier* channelNotifier,
+	  ProbeEgressAdapter* probeEgressAdapter)
+	  : channelMessageRegistrator(channelMessageRegistrator),
+	    channelNotifier(channelNotifier),
+	    probeEgressAdapter(probeEgressAdapter)
 	{
 		MS_TRACE();
 	}
@@ -19,5 +24,6 @@ namespace RTC
 
 		delete this->channelMessageRegistrator;
 		delete this->channelNotifier;
+		delete this->probeEgressAdapter;
 	}
 } // namespace RTC

@@ -510,31 +510,43 @@ namespace RTC
 	inline void Router::OnTransportProducerClosed(RTC::Transport* /*transport*/, RTC::Producer* producer)
 	{
 		MS_TRACE();
+		MS_ERROR_STD(
+		  "Router::OnTransportProducerClosed start [producerId:%s]",
+		  producer->id.c_str());
 
 		auto mapProducerConsumersIt    = this->mapProducerConsumers.find(producer);
 		auto mapProducersIt            = this->mapProducers.find(producer->id);
 		auto mapProducerRtpObserversIt = this->mapProducerRtpObservers.find(producer);
 
-		MS_ASSERT(
-		  mapProducerConsumersIt != this->mapProducerConsumers.end(),
-		  "Producer not present in mapProducerConsumers");
-		MS_ASSERT(mapProducersIt != this->mapProducers.end(), "Producer not present in mapProducers");
-		MS_ASSERT(
-		  mapProducerRtpObserversIt != this->mapProducerRtpObservers.end(),
-		  "Producer not present in mapProducerRtpObservers");
+		if (
+		  mapProducerConsumersIt == this->mapProducerConsumers.end() ||
+		  mapProducersIt == this->mapProducers.end() ||
+		  mapProducerRtpObserversIt == this->mapProducerRtpObservers.end())
+		{
+			MS_WARN_DEV(
+			  "OnTransportProducerClosed ignoring already-removed producer [producerId:%s]",
+			  producer->id.c_str());
+
+			return;
+		}
 
 		// Close all Consumers associated to the closed Producer.
 		auto& consumers = mapProducerConsumersIt->second;
+		std::vector<RTC::Consumer*> consumersToClose(consumers.begin(), consumers.end());
 
 		// NOTE: While iterating the set of Consumers, we call ProducerClosed() on each
 		// one, which will end calling Router::OnTransportConsumerProducerClosed(),
 		// which will remove the Consumer from mapConsumerProducer but won't remove the
 		// closed Consumer from the set of Consumers in mapProducerConsumers (here will
 		// erase the complete entry in that map).
-		for (auto* consumer : consumers)
+		for (auto* consumer : consumersToClose)
 		{
 			// Call consumer->ProducerClosed() so the Consumer will notify the Node process,
 			// will notify its Transport, and its Transport will delete the Consumer.
+			MS_ERROR_STD(
+			  "Router::OnTransportProducerClosed closing downstream consumer [producerId:%s consumerId:%s]",
+			  producer->id.c_str(),
+			  consumer->id.c_str());
 			consumer->ProducerClosed();
 		}
 
@@ -550,6 +562,9 @@ namespace RTC
 		this->mapProducers.erase(mapProducersIt);
 		this->mapProducerConsumers.erase(mapProducerConsumersIt);
 		this->mapProducerRtpObservers.erase(mapProducerRtpObserversIt);
+		MS_ERROR_STD(
+		  "Router::OnTransportProducerClosed done [producerId:%s]",
+		  producer->id.c_str());
 	}
 
 	inline void Router::OnTransportProducerPaused(RTC::Transport* /*transport*/, RTC::Producer* producer)
@@ -767,6 +782,9 @@ namespace RTC
 	inline void Router::OnTransportConsumerClosed(RTC::Transport* /*transport*/, RTC::Consumer* consumer)
 	{
 		MS_TRACE();
+		MS_ERROR_STD(
+		  "Router::OnTransportConsumerClosed start [consumerId:%s]",
+		  consumer->id.c_str());
 
 		// NOTE:
 		// This callback is called when the Consumer has been closed but its Producer
@@ -774,31 +792,45 @@ namespace RTC
 		// be removed.
 
 		auto mapConsumerProducerIt = this->mapConsumerProducer.find(consumer);
-
-		MS_ASSERT(
-		  mapConsumerProducerIt != this->mapConsumerProducer.end(),
-		  "Consumer not present in mapConsumerProducer");
+		if (mapConsumerProducerIt == this->mapConsumerProducer.end())
+		{
+			MS_WARN_DEV(
+			  "OnTransportConsumerClosed ignoring already-removed consumer [consumerId:%s]",
+			  consumer->id.c_str());
+			return;
+		}
 
 		// Get the associated Producer.
 		auto* producer = mapConsumerProducerIt->second;
-
-		MS_ASSERT(
-		  this->mapProducerConsumers.find(producer) != this->mapProducerConsumers.end(),
-		  "Producer not present in mapProducerConsumers");
+		auto mapProducerConsumersIt = this->mapProducerConsumers.find(producer);
+		if (mapProducerConsumersIt == this->mapProducerConsumers.end())
+		{
+			this->mapConsumerProducer.erase(mapConsumerProducerIt);
+			MS_WARN_DEV(
+			  "OnTransportConsumerClosed found missing producer mapping [consumerId:%s]",
+			  consumer->id.c_str());
+			return;
+		}
 
 		// Remove the Consumer from the set of Consumers of the Producer.
-		auto& consumers = this->mapProducerConsumers.at(producer);
+		auto& consumers = mapProducerConsumersIt->second;
 
 		consumers.erase(consumer);
 
 		// Remove the Consumer from the map.
 		this->mapConsumerProducer.erase(mapConsumerProducerIt);
+		MS_ERROR_STD(
+		  "Router::OnTransportConsumerClosed done [consumerId:%s]",
+		  consumer->id.c_str());
 	}
 
 	inline void Router::OnTransportConsumerProducerClosed(
 	  RTC::Transport* /*transport*/, RTC::Consumer* consumer)
 	{
 		MS_TRACE();
+		MS_ERROR_STD(
+		  "Router::OnTransportConsumerProducerClosed start [consumerId:%s]",
+		  consumer->id.c_str());
 
 		// NOTE:
 		// This callback is called when the Consumer has been closed because its
@@ -806,13 +838,19 @@ namespace RTC
 		// removed.
 
 		auto mapConsumerProducerIt = this->mapConsumerProducer.find(consumer);
-
-		MS_ASSERT(
-		  mapConsumerProducerIt != this->mapConsumerProducer.end(),
-		  "Consumer not present in mapConsumerProducer");
+		if (mapConsumerProducerIt == this->mapConsumerProducer.end())
+		{
+			MS_WARN_DEV(
+			  "OnTransportConsumerProducerClosed ignoring already-removed consumer [consumerId:%s]",
+			  consumer->id.c_str());
+			return;
+		}
 
 		// Remove the Consumer from the map.
 		this->mapConsumerProducer.erase(mapConsumerProducerIt);
+		MS_ERROR_STD(
+		  "Router::OnTransportConsumerProducerClosed done [consumerId:%s]",
+		  consumer->id.c_str());
 	}
 
 	inline void Router::OnTransportConsumerKeyFrameRequested(

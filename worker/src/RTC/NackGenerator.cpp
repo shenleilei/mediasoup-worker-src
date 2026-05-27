@@ -1,5 +1,5 @@
 #define MS_CLASS "RTC::NackGenerator"
-// #define MS_LOG_DEV_LEVEL 3
+#define MS_LOG_DEV_LEVEL 2
 
 #include "RTC/NackGenerator.hpp"
 #include "DepLibUV.hpp"
@@ -92,6 +92,17 @@ namespace RTC
 				  packet->GetSsrc(),
 				  packet->GetSequenceNumber());
 			}
+			else
+			{
+				MS_WARN_DEV(
+				  "late recovered packet not present in the NACK list [ssrc:%" PRIu32 ", seq:%" PRIu16
+				  ", lastSeq:%" PRIu16 ", nackList:%zu, recovered:%zu]",
+				  packet->GetSsrc(),
+				  packet->GetSequenceNumber(),
+				  this->lastSeq,
+				  this->nackList.size(),
+				  this->recoveredList.size());
+			}
 
 			return false;
 		}
@@ -128,6 +139,14 @@ namespace RTC
 
 			// Do not let a packet pass if it's newer than last seen seq and came via
 			// RTX.
+			MS_WARN_DEV(
+			  "newer recovered packet bypassed repair [ssrc:%" PRIu32 ", seq:%" PRIu16
+			  ", lastSeq:%" PRIu16 ", nackList:%zu, recovered:%zu]",
+			  packet->GetSsrc(),
+			  packet->GetSequenceNumber(),
+			  this->lastSeq,
+			  this->nackList.size(),
+			  this->recoveredList.size());
 			return false;
 		}
 
@@ -157,6 +176,22 @@ namespace RTC
 	{
 		MS_TRACE();
 
+		const uint16_t numNewNacks = seqEnd - seqStart;
+
+		if (numNewNacks >= 32u)
+		{
+			MS_WARN_DEV(
+			  "adding large packet gap to NACK list [seqStart:%" PRIu16 ", seqEnd:%" PRIu16
+			  ", count:%" PRIu16 ", lastSeq:%" PRIu16 ", currentNackList:%zu, keyFrames:%zu, recovered:%zu]",
+			  seqStart,
+			  seqEnd,
+			  numNewNacks,
+			  this->lastSeq,
+			  this->nackList.size(),
+			  this->keyFrameList.size(),
+			  this->recoveredList.size());
+		}
+
 		// Remove old packets.
 		auto it = this->nackList.lower_bound(seqEnd - MaxPacketAge);
 
@@ -165,8 +200,6 @@ namespace RTC
 		// If the nack list is too large, remove packets from the nack list until
 		// the latest first packet of a keyframe. If the list is still too large,
 		// clear it and request a keyframe.
-		const uint16_t numNewNacks = seqEnd - seqStart;
-
 		if (static_cast<uint16_t>(this->nackList.size()) + numNewNacks > MaxNackPackets)
 		{
 			// clang-format off

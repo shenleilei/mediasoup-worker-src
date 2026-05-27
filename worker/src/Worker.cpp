@@ -14,6 +14,7 @@
 #include "Channel/ChannelNotifier.hpp"
 #include "FBS/response.h"
 #include "FBS/worker.h"
+#include "RTC/ProbeEgressAdapter.hpp"
 
 /* Instance methods. */
 
@@ -30,7 +31,12 @@ Worker::Worker(::Channel::ChannelSocket* channel) : channel(channel)
 	// Set up the RTC::Shared singleton.
 	this->shared = new RTC::Shared(
 	  /*channelMessageRegistrator*/ new ChannelMessageRegistrator(),
-	  /*channelNotifier*/ new Channel::ChannelNotifier(this->channel));
+	  /*channelNotifier*/ new Channel::ChannelNotifier(this->channel),
+	  /*probeEgressAdapter*/ new RTC::ProbeEgressAdapter({
+	    Settings::configuration.probeEgressEnabled,
+	    Settings::configuration.probeEgressSocketPath,
+	    Settings::configuration.probeEgressMaxPacketSize
+	  }));
 
 #ifdef MS_EXECUTABLE
 	{
@@ -482,6 +488,7 @@ void Worker::HandleNotification(Channel::ChannelNotification* notification)
 void Worker::OnChannelClosed(Channel::ChannelSocket* /*socket*/)
 {
 	MS_TRACE_STD();
+	MS_ERROR_STD("Worker::OnChannelClosed invoked");
 
 	// Only needed for executable, library user can close channel earlier and it is fine.
 #ifdef MS_EXECUTABLE

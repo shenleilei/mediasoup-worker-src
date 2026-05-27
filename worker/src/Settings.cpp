@@ -7,6 +7,7 @@
 #include "Utils.hpp"
 #include <flatbuffers/flatbuffers.h>
 #include <cctype>   // isprint()
+#include <cstdlib>
 #include <iterator> // std::ostream_iterator
 #include <mutex>
 #include <sstream> // std::ostringstream
@@ -199,6 +200,25 @@ void Settings::SetConfiguration(int argc, char* argv[])
 		MS_THROW_TYPE_ERROR("rtcMaxPort cannot be less than rtcMinPort");
 	}
 
+	if (const char* probeSocketPath = std::getenv("MEDIASOUP_PROBE_EGRESS_SOCKET_PATH"))
+	{
+		Settings::configuration.probeEgressSocketPath = probeSocketPath;
+		Settings::configuration.probeEgressEnabled    = !Settings::configuration.probeEgressSocketPath.empty();
+	}
+
+	if (const char* probeMaxPacketSize = std::getenv("MEDIASOUP_PROBE_EGRESS_MAX_PACKET_SIZE"))
+	{
+		try
+		{
+			Settings::configuration.probeEgressMaxPacketSize =
+			  static_cast<uint32_t>(std::stoul(probeMaxPacketSize));
+		}
+		catch (const std::exception& error)
+		{
+			MS_THROW_TYPE_ERROR("%s", error.what());
+		}
+	}
+
 	// Set DTLS certificate files (if provided),
 	Settings::SetDtlsCertificateAndPrivateKeyFiles();
 }
@@ -287,6 +307,17 @@ void Settings::PrintConfiguration()
 	{
 		MS_DEBUG_TAG(
 		  info, "  libwebrtcFieldTrials: %s", Settings::configuration.libwebrtcFieldTrials.c_str());
+	}
+	if (Settings::configuration.probeEgressEnabled)
+	{
+		MS_DEBUG_TAG(
+		  info,
+		  "  probeEgressSocketPath: %s",
+		  Settings::configuration.probeEgressSocketPath.c_str());
+		MS_DEBUG_TAG(
+		  info,
+		  "  probeEgressMaxPacketSize: %" PRIu32,
+		  Settings::configuration.probeEgressMaxPacketSize);
 	}
 
 	MS_DEBUG_TAG(info, "</configuration>");

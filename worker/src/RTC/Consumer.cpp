@@ -381,6 +381,7 @@ namespace RTC
 	void Consumer::TransportDisconnected()
 	{
 		MS_TRACE();
+		MS_ERROR_STD("Consumer::TransportDisconnected [consumerId:%s]", this->id.c_str());
 
 		if (!this->transportConnected)
 		{
@@ -451,6 +452,7 @@ namespace RTC
 	void Consumer::ProducerClosed()
 	{
 		MS_TRACE();
+		MS_ERROR_STD("Consumer::ProducerClosed start [consumerId:%s]", this->id.c_str());
 
 		this->producerClosed = true;
 
@@ -459,6 +461,7 @@ namespace RTC
 		this->shared->channelNotifier->Emit(this->id, FBS::Notification::Event::CONSUMER_PRODUCER_CLOSE);
 
 		this->listener->OnConsumerProducerClosed(this);
+		MS_ERROR_STD("Consumer::ProducerClosed done [consumerId:%s]", this->id.c_str());
 	}
 
 	void Consumer::EmitTraceEventRtpAndKeyFrameTypes(RTC::RtpPacket* packet, bool isRtx) const

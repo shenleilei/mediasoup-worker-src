@@ -39,6 +39,9 @@ public:
 		std::string dtlsCertificateFile;
 		std::string dtlsPrivateKeyFile;
 		std::string libwebrtcFieldTrials{ "WebRTC-Bwe-AlrLimitedBackoff/Enabled/" };
+		bool probeEgressEnabled{ false };
+		std::string probeEgressSocketPath;
+		uint32_t probeEgressMaxPacketSize{ 65536u };
 	};
 
 public:

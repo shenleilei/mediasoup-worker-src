@@ -931,6 +931,10 @@ namespace RTC
 	void PlainTransport::SendStreamClosed(uint32_t ssrc)
 	{
 		MS_TRACE();
+		MS_ERROR_STD(
+		  "PlainTransport::SendStreamClosed [transportId:%s ssrc:%" PRIu32 "]",
+		  this->id.c_str(),
+		  ssrc);
 
 		if (this->srtpSendSession)
 		{

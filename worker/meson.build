@@ -97,6 +97,7 @@ common_sources = [
   'src/RTC/PipeTransport.cpp',
   'src/RTC/PlainTransport.cpp',
   'src/RTC/PortManager.cpp',
+  'src/RTC/ProbeEgressAdapter.cpp',
   'src/RTC/Producer.cpp',
   'src/RTC/RateCalculator.cpp',
   'src/RTC/Router.cpp',
