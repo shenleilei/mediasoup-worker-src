@@ -48,8 +48,7 @@ export async function createWorker<
 >({
 	logLevel = 'error',
 	logTags,
-	rtcMinPort = 10000,
-	rtcMaxPort = 59999,
+	rtcPort = 10000,
 	dtlsCertificateFile,
 	dtlsPrivateKeyFile,
 	libwebrtcFieldTrials,
@@ -64,8 +63,7 @@ export async function createWorker<
 	const worker = new Worker<WorkerAppData>({
 		logLevel,
 		logTags,
-		rtcMinPort,
-		rtcMaxPort,
+		rtcPort,
 		dtlsCertificateFile,
 		dtlsPrivateKeyFile,
 		libwebrtcFieldTrials,

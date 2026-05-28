@@ -58,8 +58,7 @@ test('createWorker() succeeds', async () => {
 	const worker2 = await mediasoup.createWorker<{ foo: number; bar?: string }>({
 		logLevel: 'debug',
 		logTags: ['info'],
-		rtcMinPort: 0,
-		rtcMaxPort: 9999,
+		rtcPort: 10000,
 		dtlsCertificateFile: path.join(__dirname, 'data', 'dtls-cert.pem'),
 		dtlsPrivateKeyFile: path.join(__dirname, 'data', 'dtls-key.pem'),
 		libwebrtcFieldTrials: 'WebRTC-Bwe-AlrLimitedBackoff/Disabled/',
@@ -86,14 +85,13 @@ test('createWorker() with wrong settings rejects with TypeError', async () => {
 		TypeError
 	);
 
-	await expect(
-		mediasoup.createWorker({ rtcMinPort: 1000, rtcMaxPort: 999 })
-	).rejects.toThrow(TypeError);
+	await expect(mediasoup.createWorker({ rtcPort: 0 })).rejects.toThrow(
+		TypeError
+	);
 
-	// Port is from 0 to 65535.
-	await expect(
-		mediasoup.createWorker({ rtcMinPort: 1000, rtcMaxPort: 65536 })
-	).rejects.toThrow(TypeError);
+	await expect(mediasoup.createWorker({ rtcPort: 65536 })).rejects.toThrow(
+		TypeError
+	);
 
 	await expect(
 		mediasoup.createWorker({ dtlsCertificateFile: '/notfound/cert.pem' })

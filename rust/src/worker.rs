@@ -27,7 +27,6 @@ use mediasoup_sys::fbs;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -179,8 +178,8 @@ pub struct WorkerSettings {
     /// Log tags for debugging. Check the meaning of each available tag in the
     /// [Debugging](https://mediasoup.org/documentation/v3/mediasoup/debugging/) documentation.
     pub log_tags: Vec<WorkerLogTag>,
-    /// RTC port range for ICE, DTLS, RTP, etc. Default 10000..=59999.
-    pub rtc_port_range: RangeInclusive<u16>,
+    /// RTC port for ICE, DTLS, RTP, etc. Default 10000.
+    pub rtc_port: u16,
     /// DTLS certificate and private key.
     ///
     /// If `None`, a certificate is dynamically created.
@@ -218,7 +217,7 @@ impl Default for WorkerSettings {
                 WorkerLogTag::Sctp,
                 WorkerLogTag::Message,
             ],
-            rtc_port_range: 10000..=59999,
+            rtc_port: 10000,
             dtls_files: None,
             libwebrtc_field_trials: None,
             thread_initializer: None,
@@ -232,7 +231,7 @@ impl fmt::Debug for WorkerSettings {
         let WorkerSettings {
             log_level,
             log_tags,
-            rtc_port_range,
+            rtc_port,
             dtls_files,
             libwebrtc_field_trials,
             thread_initializer,
@@ -242,7 +241,7 @@ impl fmt::Debug for WorkerSettings {
         f.debug_struct("WorkerSettings")
             .field("log_level", &log_level)
             .field("log_tags", &log_tags)
-            .field("rtc_port_range", &rtc_port_range)
+            .field("rtc_port", &rtc_port)
             .field("dtls_files", &dtls_files)
             .field("libwebrtc_field_trials", &libwebrtc_field_trials)
             .field(
@@ -353,7 +352,7 @@ impl Inner {
         WorkerSettings {
             log_level,
             log_tags,
-            rtc_port_range,
+            rtc_port,
             dtls_files,
             libwebrtc_field_trials,
             thread_initializer,
@@ -371,14 +370,7 @@ impl Inner {
             spawn_args.push(format!("--logTag={}", log_tag.as_str()));
         }
 
-        if rtc_port_range.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Invalid RTC ports range",
-            ));
-        }
-        spawn_args.push(format!("--rtcMinPort={}", rtc_port_range.start()));
-        spawn_args.push(format!("--rtcMaxPort={}", rtc_port_range.end()));
+        spawn_args.push(format!("--rtcPort={}", rtc_port));
 
         if let Some(dtls_files) = dtls_files {
             spawn_args.push(format!(

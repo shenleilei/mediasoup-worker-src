@@ -56,8 +56,7 @@ void Settings::SetConfiguration(int argc, char* argv[])
 	{
 		{ "logLevel",             optional_argument, nullptr, 'l' },
 		{ "logTags",              optional_argument, nullptr, 't' },
-		{ "rtcMinPort",           optional_argument, nullptr, 'm' },
-		{ "rtcMaxPort",           optional_argument, nullptr, 'M' },
+		{ "rtcPort",              optional_argument, nullptr, 'r' },
 		{ "dtlsCertificateFile",  optional_argument, nullptr, 'c' },
 		{ "dtlsPrivateKeyFile",   optional_argument, nullptr, 'p' },
 		{ "libwebrtcFieldTrials", optional_argument, nullptr, 'W' },
@@ -76,15 +75,15 @@ void Settings::SetConfiguration(int argc, char* argv[])
 	opterr = 0; // Don't allow getopt to print error messages.
 	while ((c = getopt_long_only(argc, argv, "", options, &optionIdx)) != -1)
 	{
-		if (!optarg)
-		{
-			MS_THROW_TYPE_ERROR("unknown configuration parameter: %s", optarg);
-		}
-
 		switch (c)
 		{
 			case 'l':
 			{
+				if (!optarg)
+				{
+					MS_THROW_TYPE_ERROR("configuration parameter requires a value: --logLevel");
+				}
+
 				stringValue = std::string(optarg);
 				SetLogLevel(stringValue);
 
@@ -93,31 +92,34 @@ void Settings::SetConfiguration(int argc, char* argv[])
 
 			case 't':
 			{
+				if (!optarg)
+				{
+					MS_THROW_TYPE_ERROR("configuration parameter requires a value: --logTags");
+				}
+
 				stringValue = std::string(optarg);
 				logTags.push_back(stringValue);
 
 				break;
 			}
 
-			case 'm':
+			case 'r':
 			{
-				try
+				if (!optarg)
 				{
-					Settings::configuration.rtcMinPort = static_cast<uint16_t>(std::stoi(optarg));
-				}
-				catch (const std::exception& error)
-				{
-					MS_THROW_TYPE_ERROR("%s", error.what());
+					MS_THROW_TYPE_ERROR("configuration parameter requires a value: --rtcPort");
 				}
 
-				break;
-			}
-
-			case 'M':
-			{
 				try
 				{
-					Settings::configuration.rtcMaxPort = static_cast<uint16_t>(std::stoi(optarg));
+					const int rtcPort = std::stoi(optarg);
+
+					if (rtcPort <= 0 || rtcPort > 65535)
+					{
+						MS_THROW_TYPE_ERROR("rtcPort must be in range 1-65535");
+					}
+
+					Settings::configuration.rtcPort = static_cast<uint16_t>(rtcPort);
 				}
 				catch (const std::exception& error)
 				{
@@ -129,6 +131,11 @@ void Settings::SetConfiguration(int argc, char* argv[])
 
 			case 'c':
 			{
+				if (!optarg)
+				{
+					MS_THROW_TYPE_ERROR("configuration parameter requires a value: --dtlsCertificateFile");
+				}
+
 				stringValue                                 = std::string(optarg);
 				Settings::configuration.dtlsCertificateFile = stringValue;
 
@@ -137,6 +144,11 @@ void Settings::SetConfiguration(int argc, char* argv[])
 
 			case 'p':
 			{
+				if (!optarg)
+				{
+					MS_THROW_TYPE_ERROR("configuration parameter requires a value: --dtlsPrivateKeyFile");
+				}
+
 				stringValue                                = std::string(optarg);
 				Settings::configuration.dtlsPrivateKeyFile = stringValue;
 
@@ -145,6 +157,11 @@ void Settings::SetConfiguration(int argc, char* argv[])
 
 			case 'W':
 			{
+				if (!optarg)
+				{
+					MS_THROW_TYPE_ERROR("configuration parameter requires a value: --libwebrtcFieldTrials");
+				}
+
 				stringValue = std::string(optarg);
 
 				if (stringValue != Settings::configuration.libwebrtcFieldTrials)
@@ -162,7 +179,13 @@ void Settings::SetConfiguration(int argc, char* argv[])
 			// Invalid option.
 			case '?':
 			{
-				if (isprint(optopt) != 0)
+				const char* option = optind > 0 && optind <= argc ? argv[optind - 1] : nullptr;
+
+				if (option)
+				{
+					MS_THROW_TYPE_ERROR("unknown configuration parameter: %s", option);
+				}
+				else if (isprint(optopt) != 0)
 				{
 					MS_THROW_TYPE_ERROR("invalid option '-%c'", (char)optopt);
 				}
@@ -192,12 +215,6 @@ void Settings::SetConfiguration(int argc, char* argv[])
 	if (!logTags.empty())
 	{
 		Settings::SetLogTags(logTags);
-	}
-
-	// Validate RTC ports.
-	if (Settings::configuration.rtcMaxPort < Settings::configuration.rtcMinPort)
-	{
-		MS_THROW_TYPE_ERROR("rtcMaxPort cannot be less than rtcMinPort");
 	}
 
 	if (const char* probeSocketPath = std::getenv("MEDIASOUP_PROBE_EGRESS_SOCKET_PATH"))
@@ -295,8 +312,7 @@ void Settings::PrintConfiguration()
 	MS_DEBUG_TAG(
 	  info, "  logLevel: %s", Settings::LogLevel2String[Settings::configuration.logLevel].c_str());
 	MS_DEBUG_TAG(info, "  logTags: %s", logTagsStream.str().c_str());
-	MS_DEBUG_TAG(info, "  rtcMinPort: %" PRIu16, Settings::configuration.rtcMinPort);
-	MS_DEBUG_TAG(info, "  rtcMaxPort: %" PRIu16, Settings::configuration.rtcMaxPort);
+	MS_DEBUG_TAG(info, "  rtcPort: %" PRIu16, Settings::configuration.rtcPort);
 	if (!Settings::configuration.dtlsCertificateFile.empty())
 	{
 		MS_DEBUG_TAG(

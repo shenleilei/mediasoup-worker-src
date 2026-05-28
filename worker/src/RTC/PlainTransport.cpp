@@ -165,20 +165,13 @@ namespace RTC
 				this->udpSocket = new RTC::UdpSocket(
 				  this, this->listenInfo.ip, this->listenInfo.port, this->listenInfo.flags);
 			}
-			// NOTE: This is temporal to allow deprecated usage of worker port range.
+			// NOTE: This is temporal to allow deprecated usage of worker rtcPort.
 			// In the future this should throw since |port| or |portRange| will be
 			// required.
 			else
 			{
-				uint64_t portRangeHash{ 0u };
-
 				this->udpSocket = new RTC::UdpSocket(
-				  this,
-				  this->listenInfo.ip,
-				  Settings::configuration.rtcMinPort,
-				  Settings::configuration.rtcMaxPort,
-				  this->listenInfo.flags,
-				  portRangeHash);
+				  this, this->listenInfo.ip, Settings::configuration.rtcPort, this->listenInfo.flags);
 			}
 
 			if (this->listenInfo.sendBufferSize != 0)
@@ -212,20 +205,16 @@ namespace RTC
 					this->rtcpUdpSocket = new RTC::UdpSocket(
 					  this, this->rtcpListenInfo.ip, this->rtcpListenInfo.port, this->rtcpListenInfo.flags);
 				}
-				// NOTE: This is temporal to allow deprecated usage of worker port range.
+				// NOTE: This is temporal to allow deprecated usage of worker rtcPort.
 				// In the future this should throw since |port| or |portRange| will be
 				// required.
 				else
 				{
-					uint64_t portRangeHash{ 0u };
-
 					this->rtcpUdpSocket = new RTC::UdpSocket(
 					  this,
 					  this->rtcpListenInfo.ip,
-					  Settings::configuration.rtcMinPort,
-					  Settings::configuration.rtcMaxPort,
-					  this->rtcpListenInfo.flags,
-					  portRangeHash);
+					  Settings::configuration.rtcPort,
+					  this->rtcpListenInfo.flags);
 				}
 
 				if (this->rtcpListenInfo.sendBufferSize != 0)

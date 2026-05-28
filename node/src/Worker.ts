@@ -50,16 +50,9 @@ export type WorkerSettings<WorkerAppData extends AppData = AppData> = {
 	logTags?: WorkerLogTag[];
 
 	/**
-	 * Minimun RTC port for ICE, DTLS, RTP, etc. Default 10000.
-	 * @deprecated Use |portRange| in TransportListenInfo object instead.
+	 * RTC port for ICE, DTLS, RTP, etc. Default 10000.
 	 */
-	rtcMinPort?: number;
-
-	/**
-	 * Maximum RTC port for ICE, DTLS, RTP, etc. Default 59999.
-	 * @deprecated Use |portRange| in TransportListenInfo object instead.
-	 */
-	rtcMaxPort?: number;
+	rtcPort?: number;
 
 	/**
 	 * Path to the DTLS public certificate file in PEM format. If unset, a
@@ -283,8 +276,7 @@ export class Worker<
 	constructor({
 		logLevel,
 		logTags,
-		rtcMinPort,
-		rtcMaxPort,
+		rtcPort,
 		dtlsCertificateFile,
 		dtlsPrivateKeyFile,
 		libwebrtcFieldTrials,
@@ -319,12 +311,8 @@ export class Worker<
 			}
 		}
 
-		if (typeof rtcMinPort === 'number' && !Number.isNaN(rtcMinPort)) {
-			spawnArgs.push(`--rtcMinPort=${rtcMinPort}`);
-		}
-
-		if (typeof rtcMaxPort === 'number' && !Number.isNaN(rtcMaxPort)) {
-			spawnArgs.push(`--rtcMaxPort=${rtcMaxPort}`);
+		if (typeof rtcPort === 'number' && !Number.isNaN(rtcPort)) {
+			spawnArgs.push(`--rtcPort=${rtcPort}`);
 		}
 
 		if (typeof dtlsCertificateFile === 'string' && dtlsCertificateFile) {

@@ -111,20 +111,12 @@ namespace RTC
 					{
 						udpSocket = new RTC::UdpSocket(this, ip, listenInfo->port(), flags);
 					}
-					// NOTE: This is temporal to allow deprecated usage of worker port range.
+					// NOTE: This is temporal to allow deprecated usage of worker rtcPort.
 					// In the future this should throw since |port| or |portRange| will be
 					// required.
 					else
 					{
-						uint64_t portRangeHash{ 0u };
-
-						udpSocket = new RTC::UdpSocket(
-						  this,
-						  ip,
-						  Settings::configuration.rtcMinPort,
-						  Settings::configuration.rtcMaxPort,
-						  flags,
-						  portRangeHash);
+						udpSocket = new RTC::UdpSocket(this, ip, Settings::configuration.rtcPort, flags);
 					}
 
 					this->udpSocketOrTcpServers.emplace_back(udpSocket, nullptr, announcedAddress);
@@ -167,21 +159,13 @@ namespace RTC
 					{
 						tcpServer = new RTC::TcpServer(this, this, ip, listenInfo->port(), flags);
 					}
-					// NOTE: This is temporal to allow deprecated usage of worker port range.
+					// NOTE: This is temporal to allow deprecated usage of worker rtcPort.
 					// In the future this should throw since |port| or |portRange| will be
 					// required.
 					else
 					{
-						uint64_t portRangeHash{ 0u };
-
-						tcpServer = new RTC::TcpServer(
-						  this,
-						  this,
-						  ip,
-						  Settings::configuration.rtcMinPort,
-						  Settings::configuration.rtcMaxPort,
-						  flags,
-						  portRangeHash);
+						tcpServer =
+						  new RTC::TcpServer(this, this, ip, Settings::configuration.rtcPort, flags);
 					}
 
 					this->udpSocketOrTcpServers.emplace_back(nullptr, tcpServer, announcedAddress);
