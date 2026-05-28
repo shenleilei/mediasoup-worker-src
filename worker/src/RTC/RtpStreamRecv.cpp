@@ -820,8 +820,18 @@ namespace RTC
 		{
 			if (HasRtx())
 			{
+				const uint32_t repairedExcess = repaired - lost;
+
 				repaired = lost;
-				retransmitted -= repaired - lost;
+
+				if (repairedExcess >= retransmitted)
+				{
+					retransmitted = 0;
+				}
+				else
+				{
+					retransmitted -= repairedExcess;
+				}
 			}
 			else
 			{
