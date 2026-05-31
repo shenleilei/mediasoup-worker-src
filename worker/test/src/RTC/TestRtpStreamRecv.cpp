@@ -1,8 +1,10 @@
 #include "common.hpp"
 #include "DepLibUV.hpp"
+#include "FBS/rtpStream.h"
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpStream.hpp"
 #include "RTC/RtpStreamRecv.hpp"
+#include <flatbuffers/flatbuffers.h>
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
 
@@ -210,6 +212,85 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 
 	// Must run the loop to wait for UV timers and close them.
 	DepLibUV::RunLoop();
+
+	delete packet;
+}
+
+SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rtp][rtpstream][stats]")
+{
+	class RtpStreamRecvListener : public RtpStreamRecv::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+		}
+
+		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamNeedWorstRemoteFractionLost(
+		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
+		{
+		}
+	};
+
+	// clang-format off
+	uint8_t buffer[] =
+	{
+		0x90, 0x01, 0x00, 0x08,
+		0x00, 0x00, 0x00, 0x04,
+		0x00, 0x00, 0x00, 0x05,
+		0x10, 0x00, 0x00, 0x05, // Header Extension (two-byte, 20 bytes)
+		0x0d, 0x10,             // id=13 len=16
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8,
+		0x00, 0x00
+	};
+	// clang-format on
+
+	RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+
+	if (!packet)
+	{
+		FAIL("not a RTP packet");
+	}
+
+	packet->SetAbsCaptureTimeExtensionId(13);
+
+	RtpStream::Params params;
+
+	params.ssrc        = packet->GetSsrc();
+	params.payloadType = packet->GetPayloadType();
+	params.clockRate   = 90000;
+	params.mimeType.type = RTC::RtpCodecMimeType::Type::VIDEO;
+	params.mimeType.subtype = RTC::RtpCodecMimeType::Subtype::VP8;
+	params.mimeType.UpdateMimeType();
+
+	RtpStreamRecvListener listener;
+	RtpStreamRecv rtpStream(&listener, params, SendNackDelay, UseRtpInactivityCheck);
+
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+
+	flatbuffers::FlatBufferBuilder builder;
+	auto statsOffset = rtpStream.FillBufferStats(builder);
+	builder.Finish(statsOffset);
+
+	const auto* stats = flatbuffers::GetRoot<FBS::RtpStream::Stats>(builder.GetBufferPointer());
+	REQUIRE(stats);
+	REQUIRE(stats->data_type() == FBS::RtpStream::StatsData::RecvStats);
+
+	const auto* recvStats = stats->data_as_RecvStats();
+	REQUIRE(recvStats);
+	REQUIRE(recvStats->base());
+	REQUIRE(recvStats->base()->data_type() == FBS::RtpStream::StatsData::BaseStats);
+
+	const auto* baseStats = recvStats->base()->data_as_BaseStats();
+	REQUIRE(baseStats);
+	REQUIRE(baseStats->absCaptureTimestampNtp().has_value() == true);
+	REQUIRE(baseStats->absCaptureTimestampNtp().value() == 0x0102030405060708ULL);
+	REQUIRE(baseStats->estimatedCaptureClockOffset().has_value() == true);
+	REQUIRE(static_cast<uint64_t>(baseStats->estimatedCaptureClockOffset().value()) == 0xfffefdfcfbfaf9f8ULL);
 
 	delete packet;
 }

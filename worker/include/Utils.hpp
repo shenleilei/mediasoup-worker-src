@@ -2,6 +2,7 @@
 #define MS_UTILS_HPP
 
 #include "common.hpp"
+#include <chrono>
 #include <openssl/evp.h>
 #include <cmath>
 #include <cstring> // std::memcmp(), std::memcpy()
@@ -373,6 +374,41 @@ namespace Utils
 		static uint32_t TimeMsToAbsSendTime(uint64_t ms)
 		{
 			return static_cast<uint32_t>(((ms << 18) + 500) / 1000) & 0x00FFFFFF;
+		}
+
+		static uint64_t GetRealTimeMs()
+		{
+			return static_cast<uint64_t>(
+			  std::chrono::duration_cast<std::chrono::milliseconds>(
+			    std::chrono::system_clock::now().time_since_epoch())
+			    .count());
+		}
+
+		static uint64_t UnixMsToNtp64(uint64_t unixMs)
+		{
+			const uint64_t seconds   = (unixMs / 1000u) + UnixNtpOffset;
+			const uint64_t fractions = static_cast<uint64_t>(
+			  std::llround((static_cast<long double>(unixMs % 1000u) / 1000.0L) * NtpFractionalUnit));
+
+			return (seconds << 32) | (fractions & 0xFFFFFFFFULL);
+		}
+
+		static uint64_t Ntp64ToUnixMs(uint64_t ntp64)
+		{
+			const uint32_t seconds   = static_cast<uint32_t>(ntp64 >> 32);
+			const uint32_t fractions = static_cast<uint32_t>(ntp64 & 0xFFFFFFFFULL);
+			const uint64_t unixSeconds =
+			  seconds >= UnixNtpOffset ? static_cast<uint64_t>(seconds - UnixNtpOffset) : 0u;
+			const uint64_t fractionalMs = static_cast<uint64_t>(
+			  std::llround((static_cast<long double>(fractions) * 1000.0L) / NtpFractionalUnit));
+
+			return unixSeconds * 1000u + fractionalMs;
+		}
+
+		static int64_t SignedNtp64ToMs(int64_t ntp64)
+		{
+			return static_cast<int64_t>(
+			  std::llround((static_cast<long double>(ntp64) * 1000.0L) / NtpFractionalUnit));
 		}
 	};
 } // namespace Utils

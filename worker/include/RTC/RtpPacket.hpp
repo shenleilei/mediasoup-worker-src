@@ -283,6 +283,11 @@ namespace RTC
 			this->absSendTimeExtensionId = id;
 		}
 
+		void SetAbsCaptureTimeExtensionId(uint8_t id)
+		{
+			this->absCaptureTimeExtensionId = id;
+		}
+
 		void SetTransportWideCc01ExtensionId(uint8_t id)
 		{
 			this->transportWideCc01ExtensionId = id;
@@ -362,6 +367,32 @@ namespace RTC
 			}
 
 			absSendtime = Utils::Byte::Get3Bytes(extenValue, 0);
+
+			return true;
+		}
+
+		bool ReadAbsCaptureTime(
+		  uint64_t& absoluteCaptureTimestamp,
+		  bool& hasEstimatedCaptureClockOffset,
+		  int64_t& estimatedCaptureClockOffset) const
+		{
+			uint8_t extenLen;
+			uint8_t* extenValue = GetExtension(this->absCaptureTimeExtensionId, extenLen);
+
+			if (!extenValue || (extenLen != 8u && extenLen != 16u))
+			{
+				return false;
+			}
+
+			absoluteCaptureTimestamp       = Utils::Byte::Get8Bytes(extenValue, 0);
+			hasEstimatedCaptureClockOffset = extenLen == 16u;
+			estimatedCaptureClockOffset    = 0;
+
+			if (hasEstimatedCaptureClockOffset)
+			{
+				estimatedCaptureClockOffset =
+				  static_cast<int64_t>(Utils::Byte::Get8Bytes(extenValue, 8));
+			}
 
 			return true;
 		}
@@ -667,6 +698,7 @@ namespace RTC
 		uint8_t ridExtensionId{ 0u };
 		uint8_t rridExtensionId{ 0u };
 		uint8_t absSendTimeExtensionId{ 0u };
+		uint8_t absCaptureTimeExtensionId{ 0u };
 		uint8_t transportWideCc01ExtensionId{ 0u };
 		uint8_t frameMarking07ExtensionId{ 0u }; // NOTE: Remove once RFC.
 		uint8_t frameMarkingExtensionId{ 0u };

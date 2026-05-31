@@ -92,7 +92,6 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		bool voice;
 		uint8_t volume;
 		uint32_t absSendTime;
-
 		if (!helpers::readBinaryFile("data/packet3.raw", buffer, &len))
 		{
 			FAIL("cannot open file");
@@ -248,6 +247,97 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 
 		REQUIRE(packet->GetPayloadLength() == 1000);
 		REQUIRE(packet->GetSize() == 1028);
+
+		delete packet;
+	}
+
+	SECTION("create RtpPacket with One-Byte abs-capture-time header extension")
+	{
+		// clang-format off
+		uint8_t buffer[] =
+		{
+			0x90, 0x01, 0x00, 0x08,
+			0x00, 0x00, 0x00, 0x04,
+			0x00, 0x00, 0x00, 0x05,
+			0xbe, 0xde, 0x00, 0x03, // Header Extension (12 bytes)
+			0x47,                   // id=4 len=8
+			0x01, 0x02, 0x03, 0x04,
+			0x05, 0x06, 0x07, 0x08,
+			0x00, 0x00, 0x00
+		};
+		// clang-format on
+
+		RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+		uint8_t extenLen{ 0u };
+		uint8_t* extenValue{ nullptr };
+		uint64_t absoluteCaptureTimestamp{ 0u };
+		bool hasEstimatedCaptureClockOffset2{ false };
+		int64_t estimatedCaptureClockOffset2{ 0 };
+
+		if (!packet)
+		{
+			FAIL("not a RTP packet");
+		}
+
+		REQUIRE(packet->HasHeaderExtension() == true);
+		REQUIRE(packet->HasOneByteExtensions() == true);
+		REQUIRE(packet->HasTwoBytesExtensions() == false);
+
+		packet->SetAbsCaptureTimeExtensionId(4);
+		extenValue = packet->GetExtension(4, extenLen);
+
+		REQUIRE(packet->HasExtension(4) == true);
+		REQUIRE(extenLen == 8);
+		REQUIRE(extenValue);
+		REQUIRE(packet->ReadAbsCaptureTime(
+		  absoluteCaptureTimestamp,
+		  hasEstimatedCaptureClockOffset2,
+		  estimatedCaptureClockOffset2) == true);
+		REQUIRE(absoluteCaptureTimestamp == 0x0102030405060708ULL);
+		REQUIRE(hasEstimatedCaptureClockOffset2 == false);
+		REQUIRE(estimatedCaptureClockOffset2 == 0);
+
+		delete packet;
+	}
+
+	SECTION("create RtpPacket with Two-Bytes abs-capture-time header extension")
+	{
+		// clang-format off
+		uint8_t buffer[] =
+		{
+			0x90, 0x01, 0x00, 0x08,
+			0x00, 0x00, 0x00, 0x04,
+			0x00, 0x00, 0x00, 0x05,
+			0x10, 0x00, 0x00, 0x05, // Header Extension (two-byte, 20 bytes)
+			0x0d, 0x10,             // id=13 len=16
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8,
+			0x00, 0x00
+		};
+		// clang-format on
+
+		RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+		uint64_t absoluteCaptureTimestamp{ 0u };
+		bool hasEstimatedCaptureClockOffset2{ false };
+		int64_t estimatedCaptureClockOffset2{ 0 };
+
+		if (!packet)
+		{
+			FAIL("not a RTP packet");
+		}
+
+		REQUIRE(packet->HasHeaderExtension() == true);
+		REQUIRE(packet->HasOneByteExtensions() == false);
+		REQUIRE(packet->HasTwoBytesExtensions() == true);
+
+		packet->SetAbsCaptureTimeExtensionId(13);
+		REQUIRE(packet->ReadAbsCaptureTime(
+		  absoluteCaptureTimestamp,
+		  hasEstimatedCaptureClockOffset2,
+		  estimatedCaptureClockOffset2) == true);
+		REQUIRE(absoluteCaptureTimestamp == 0x0102030405060708ULL);
+		REQUIRE(hasEstimatedCaptureClockOffset2 == true);
+		REQUIRE(static_cast<uint64_t>(estimatedCaptureClockOffset2) == 0xfffefdfcfbfaf9f8ULL);
 
 		delete packet;
 	}

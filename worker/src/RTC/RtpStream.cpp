@@ -80,7 +80,19 @@ namespace RTC
 		  this->params.rtxSsrc ? flatbuffers::Optional<uint32_t>(this->params.rtxSsrc)
 		                       : flatbuffers::nullopt,
 		  this->rtxStream ? this->rtxStream->GetPacketsDiscarded() : 0,
-		  this->rtt > 0.0f ? this->rtt : 0);
+		  this->rtt > 0.0f ? this->rtt : 0,
+		  this->hasAbsCaptureTime ? flatbuffers::Optional<uint64_t>(this->absCaptureTimeNtp)
+		                          : flatbuffers::nullopt,
+		  this->hasEstimatedCaptureClockOffset
+		    ? flatbuffers::Optional<int64_t>(this->estimatedCaptureClockOffset)
+		    : flatbuffers::nullopt,
+		  this->hasAbsCaptureTime ? flatbuffers::Optional<uint64_t>(this->absCaptureTimestampMs)
+		                          : flatbuffers::nullopt,
+		  this->hasEstimatedCaptureClockOffset
+		    ? flatbuffers::Optional<int64_t>(this->estimatedCaptureClockOffsetMs)
+		    : flatbuffers::nullopt,
+		  this->hasAbsCaptureTime ? flatbuffers::Optional<int64_t>(this->absCaptureReceiveDeltaMs)
+		                          : flatbuffers::nullopt);
 
 		return FBS::RtpStream::CreateStats(
 		  builder, FBS::RtpStream::StatsData::BaseStats, baseStats.Union());
@@ -326,6 +338,26 @@ namespace RTC
 			  this->score);
 #endif
 		}
+	}
+
+	void RtpStream::UpdateAbsCaptureTime(
+	  uint64_t absoluteCaptureTimestamp,
+	  bool hasEstimatedCaptureClockOffset,
+	  int64_t estimatedCaptureClockOffset,
+	  uint64_t receiveWallClockMs)
+	{
+		this->hasAbsCaptureTime               = true;
+		this->absCaptureTimeNtp              = absoluteCaptureTimestamp;
+		this->absCaptureTimestampMs          = Utils::Time::Ntp64ToUnixMs(absoluteCaptureTimestamp);
+		this->absCaptureReceiveDeltaMs       =
+		  static_cast<int64_t>(receiveWallClockMs) - static_cast<int64_t>(this->absCaptureTimestampMs);
+		this->hasEstimatedCaptureClockOffset = hasEstimatedCaptureClockOffset;
+		this->estimatedCaptureClockOffset    = hasEstimatedCaptureClockOffset
+		                                         ? estimatedCaptureClockOffset
+		                                         : 0;
+		this->estimatedCaptureClockOffsetMs  = hasEstimatedCaptureClockOffset
+		                                         ? Utils::Time::SignedNtp64ToMs(estimatedCaptureClockOffset)
+		                                         : 0;
 	}
 
 	void RtpStream::PacketRetransmitted(RTC::RtpPacket* /*packet*/)

@@ -308,6 +308,23 @@ namespace RTC
 		// Calculate Jitter.
 		CalculateJitter(packet->GetTimestamp());
 
+		uint64_t absoluteCaptureTimestamp{ 0u };
+		bool hasEstimatedCaptureClockOffset{ false };
+		int64_t estimatedCaptureClockOffset{ 0 };
+
+		if (packet->ReadAbsCaptureTime(
+		      absoluteCaptureTimestamp,
+		      hasEstimatedCaptureClockOffset,
+		      estimatedCaptureClockOffset))
+		{
+			const auto receiveWallClockMs = Utils::Time::GetRealTimeMs();
+			UpdateAbsCaptureTime(
+			  absoluteCaptureTimestamp,
+			  hasEstimatedCaptureClockOffset,
+			  estimatedCaptureClockOffset,
+			  receiveWallClockMs);
+		}
+
 		// Increase transmission counter.
 		this->transmissionCounter.Update(packet);
 

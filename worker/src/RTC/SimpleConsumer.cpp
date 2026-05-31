@@ -1,6 +1,6 @@
 #include "FBS/consumer.h"
 #define MS_CLASS "RTC::SimpleConsumer"
-// #define MS_LOG_DEV_LEVEL 3
+#define MS_LOG_DEV_LEVEL 2
 
 #include "DepLibUV.hpp"
 #include "Logger.hpp"
@@ -305,8 +305,74 @@ namespace RTC
 		packet->logger.consumerId = this->id;
 #endif
 
+		auto allowsH264SyncParameterPacket = [this, packet]() {
+			if (this->kind != RTC::Media::Kind::VIDEO)
+			{
+				return false;
+			}
+
+			auto& encoding         = this->rtpParameters.encodings[0];
+			const auto* mediaCodec = this->rtpParameters.GetCodecForEncoding(encoding);
+
+			if (!mediaCodec || mediaCodec->mimeType.subtype != RTC::RtpCodecMimeType::Subtype::H264)
+			{
+				return false;
+			}
+
+			const auto* payload = packet->GetPayload();
+			const auto payloadLength = packet->GetPayloadLength();
+
+			if (!payload || payloadLength < 1u)
+			{
+				return false;
+			}
+
+			const uint8_t nalType = payload[0] & 0x1F;
+
+			switch (nalType)
+			{
+				case 7: // SPS
+				case 8: // PPS
+				case 6: // SEI
+				case 9: // AUD
+					return true;
+				case 24: // STAP-A
+				{
+					size_t offset{ 1u };
+					size_t remaining = payloadLength - 1u;
+
+					while (remaining >= 3u)
+					{
+						const auto naluSize = Utils::Byte::Get2Bytes(payload, offset);
+						if (remaining < static_cast<size_t>(naluSize) + 2u)
+						{
+							break;
+						}
+
+						const uint8_t subNalType = payload[offset + 2] & 0x1F;
+						if (subNalType == 7 || subNalType == 8 || subNalType == 6 || subNalType == 9)
+						{
+							return true;
+						}
+
+						offset += naluSize + 2u;
+						remaining -= naluSize + 2u;
+					}
+
+					return false;
+				}
+				default:
+					return false;
+			}
+		};
+
 		if (!IsActive())
 		{
+			MS_WARN_DEV(
+			  "simple consumer inactive, dropping packet [consumerId:%s, producerId:%s, seq:%" PRIu16 "]",
+			  this->id.c_str(),
+			  this->producerId.c_str(),
+			  packet->GetSequenceNumber());
 #ifdef MS_RTC_LOGGER_RTP
 			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::CONSUMER_INACTIVE);
 #endif
@@ -321,6 +387,11 @@ namespace RTC
 		if (!this->supportedCodecPayloadTypes[payloadType])
 		{
 			MS_DEBUG_DEV("payload type not supported [payloadType:%" PRIu8 "]", payloadType);
+			MS_WARN_DEV(
+			  "simple consumer payload type not supported [consumerId:%s, producerId:%s, payloadType:%" PRIu8 "]",
+			  this->id.c_str(),
+			  this->producerId.c_str(),
+			  payloadType);
 
 #ifdef MS_RTC_LOGGER_RTP
 			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::UNSUPPORTED_PAYLOAD_TYPE);
@@ -339,6 +410,13 @@ namespace RTC
 			  packet->GetSsrc(),
 			  packet->GetSequenceNumber(),
 			  packet->GetTimestamp());
+			MS_WARN_DEV(
+			  "simple consumer codec processing dropped packet [consumerId:%s, producerId:%s, seq:%" PRIu16
+			  ", ts:%" PRIu32 "]",
+			  this->id.c_str(),
+			  this->producerId.c_str(),
+			  packet->GetSequenceNumber(),
+			  packet->GetTimestamp());
 
 			this->rtpSeqManager.Drop(packet->GetSequenceNumber());
 
@@ -353,11 +431,39 @@ namespace RTC
 		// the packet.
 		if (this->syncRequired && this->keyFrameSupported && !packet->IsKeyFrame())
 		{
+			const bool allowSyncParameterPacket = allowsH264SyncParameterPacket();
+			const auto* payload = packet->GetPayload();
+			const auto payloadLength = packet->GetPayloadLength();
+			const uint8_t nalType = (payload && payloadLength > 0u) ? (payload[0] & 0x1F) : 0u;
+
+			if (allowSyncParameterPacket)
+			{
+				MS_WARN_DEV(
+				  "simple consumer forwarding H264 sync parameter packet while waiting for keyframe "
+				  "[consumerId:%s, producerId:%s, seq:%" PRIu16 ", ts:%" PRIu32 ", nalType:%" PRIu8 "]",
+				  this->id.c_str(),
+				  this->producerId.c_str(),
+				  packet->GetSequenceNumber(),
+				  packet->GetTimestamp(),
+				  nalType);
+			}
+			else
+			{
+			MS_WARN_DEV(
+			  "simple consumer waiting for keyframe [consumerId:%s, producerId:%s, seq:%" PRIu16
+			  ", ts:%" PRIu32 ", nalType:%" PRIu8 ", isKeyFrame:%s]",
+			  this->id.c_str(),
+			  this->producerId.c_str(),
+			  packet->GetSequenceNumber(),
+			  packet->GetTimestamp(),
+			  nalType,
+			  packet->IsKeyFrame() ? "true" : "false");
 #ifdef MS_RTC_LOGGER_RTP
 			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::NOT_A_KEYFRAME);
 #endif
 
 			return;
+			}
 		}
 
 		// Whether this is the first packet after re-sync.
@@ -389,6 +495,57 @@ namespace RTC
 		packet->SetSsrc(this->rtpParameters.encodings[0].ssrc);
 		packet->SetSequenceNumber(seq);
 
+		// Rebuild outbound RTP header extensions using the consumer negotiated ids.
+		{
+			thread_local static uint8_t buffer[256];
+			thread_local static std::vector<RTC::RtpPacket::GenericExtension> extensions;
+
+			if (extensions.capacity() != 16)
+			{
+				extensions.reserve(16);
+			}
+
+			extensions.clear();
+
+			uint8_t* bufferPtr{ buffer };
+
+			// MID.
+			if (this->rtpHeaderExtensionIds.mid != 0u && !this->rtpParameters.mid.empty())
+			{
+				const auto extenLen = static_cast<uint8_t>(
+				  std::min<size_t>(this->rtpParameters.mid.size(), RTC::MidMaxLength));
+				std::memcpy(bufferPtr, this->rtpParameters.mid.data(), extenLen);
+				extensions.emplace_back(this->rtpHeaderExtensionIds.mid, extenLen, bufferPtr);
+				bufferPtr += extenLen;
+			}
+
+			// abs-send-time.
+			if (this->rtpHeaderExtensionIds.absSendTime != 0u)
+			{
+				const uint8_t extenLen = 3u;
+				Utils::Byte::Set3Bytes(bufferPtr, 0, 0u);
+				extensions.emplace_back(this->rtpHeaderExtensionIds.absSendTime, extenLen, bufferPtr);
+				bufferPtr += extenLen;
+			}
+
+			// transport-wide-cc.
+			if (this->rtpHeaderExtensionIds.transportWideCc01 != 0u)
+			{
+				const uint8_t extenLen = 2u;
+				Utils::Byte::Set2Bytes(bufferPtr, 0, 0u);
+				extensions.emplace_back(this->rtpHeaderExtensionIds.transportWideCc01, extenLen, bufferPtr);
+				bufferPtr += extenLen;
+			}
+
+			if (!extensions.empty())
+			{
+				packet->SetExtensions(1u, extensions);
+				packet->SetMidExtensionId(this->rtpHeaderExtensionIds.mid);
+				packet->SetAbsSendTimeExtensionId(this->rtpHeaderExtensionIds.absSendTime);
+				packet->SetTransportWideCc01ExtensionId(this->rtpHeaderExtensionIds.transportWideCc01);
+			}
+		}
+
 #ifdef MS_RTC_LOGGER_RTP
 		packet->logger.sendRtpTimestamp = packet->GetTimestamp();
 		packet->logger.sendSeqNumber    = seq;
@@ -409,6 +566,15 @@ namespace RTC
 		// Process the packet.
 		if (this->rtpStream->ReceivePacket(packet, sharedPacket))
 		{
+			MS_WARN_DEV(
+			  "simple consumer sending RTP [consumerId:%s, producerId:%s, seq:%" PRIu16 ", ts:%" PRIu32
+			  ", marker:%s, keyframe:%s]",
+			  this->id.c_str(),
+			  this->producerId.c_str(),
+			  packet->GetSequenceNumber(),
+			  packet->GetTimestamp(),
+			  packet->HasMarker() ? "true" : "false",
+			  packet->IsKeyFrame() ? "true" : "false");
 			// Send the packet.
 			this->listener->OnConsumerSendRtpPacket(this, packet);
 

@@ -137,6 +137,34 @@ namespace RTC
 		{
 			return this->rtt;
 		}
+		bool HasAbsCaptureTime() const
+		{
+			return this->hasAbsCaptureTime;
+		}
+		uint64_t GetAbsCaptureTimeNtp() const
+		{
+			return this->absCaptureTimeNtp;
+		}
+		bool HasEstimatedCaptureClockOffset() const
+		{
+			return this->hasEstimatedCaptureClockOffset;
+		}
+		int64_t GetEstimatedCaptureClockOffset() const
+		{
+			return this->estimatedCaptureClockOffset;
+		}
+		uint64_t GetAbsCaptureTimestampMs() const
+		{
+			return this->absCaptureTimestampMs;
+		}
+		int64_t GetEstimatedCaptureClockOffsetMs() const
+		{
+			return this->estimatedCaptureClockOffsetMs;
+		}
+		int64_t GetAbsCaptureReceiveDeltaMs() const
+		{
+			return this->absCaptureReceiveDeltaMs;
+		}
 		uint64_t GetMaxPacketMs() const
 		{
 			return this->maxPacketMs;
@@ -167,6 +195,11 @@ namespace RTC
 		void UpdateScore(uint8_t score);
 		void PacketRetransmitted(RTC::RtpPacket* packet);
 		void PacketRepaired(RTC::RtpPacket* packet);
+		void UpdateAbsCaptureTime(
+		  uint64_t absoluteCaptureTimestamp,
+		  bool hasEstimatedCaptureClockOffset,
+		  int64_t estimatedCaptureClockOffset,
+		  uint64_t receiveWallClockMs);
 		uint32_t GetExpectedPackets() const
 		{
 			return (this->cycles + this->maxSeq) - this->baseSeq + 1;
@@ -215,6 +248,13 @@ namespace RTC
 		// RTP timestamp in last Sender Report.
 		uint32_t lastSenderReportTs{ 0u };
 		float rtt{ 0.0f };
+		bool hasAbsCaptureTime{ false };
+		uint64_t absCaptureTimeNtp{ 0u };
+		uint64_t absCaptureTimestampMs{ 0u };
+		int64_t absCaptureReceiveDeltaMs{ 0 };
+		bool hasEstimatedCaptureClockOffset{ false };
+		int64_t estimatedCaptureClockOffset{ 0 };
+		int64_t estimatedCaptureClockOffsetMs{ 0 };
 		// Instance of RtxStream.
 		RTC::RtxStream* rtxStream{ nullptr };
 

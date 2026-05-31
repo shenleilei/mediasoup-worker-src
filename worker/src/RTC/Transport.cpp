@@ -330,6 +330,9 @@ namespace RTC
 		  this->recvRtpHeaderExtensionIds.absSendTime != 0u
 		    ? flatbuffers::Optional<uint8_t>(this->recvRtpHeaderExtensionIds.absSendTime)
 		    : flatbuffers::nullopt,
+		  this->recvRtpHeaderExtensionIds.absCaptureTime != 0u
+		    ? flatbuffers::Optional<uint8_t>(this->recvRtpHeaderExtensionIds.absCaptureTime)
+		    : flatbuffers::nullopt,
 		  this->recvRtpHeaderExtensionIds.transportWideCc01 != 0u
 		    ? flatbuffers::Optional<uint8_t>(this->recvRtpHeaderExtensionIds.transportWideCc01)
 		    : flatbuffers::nullopt);
@@ -695,6 +698,12 @@ namespace RTC
 				if (producerRtpHeaderExtensionIds.absSendTime != 0u)
 				{
 					this->recvRtpHeaderExtensionIds.absSendTime = producerRtpHeaderExtensionIds.absSendTime;
+				}
+
+				if (producerRtpHeaderExtensionIds.absCaptureTime != 0u)
+				{
+					this->recvRtpHeaderExtensionIds.absCaptureTime =
+					  producerRtpHeaderExtensionIds.absCaptureTime;
 				}
 
 				if (producerRtpHeaderExtensionIds.transportWideCc01 != 0u)
@@ -1581,6 +1590,7 @@ namespace RTC
 		packet->SetRidExtensionId(this->recvRtpHeaderExtensionIds.rid);
 		packet->SetRepairedRidExtensionId(this->recvRtpHeaderExtensionIds.rrid);
 		packet->SetAbsSendTimeExtensionId(this->recvRtpHeaderExtensionIds.absSendTime);
+		packet->SetAbsCaptureTimeExtensionId(this->recvRtpHeaderExtensionIds.absCaptureTime);
 		packet->SetTransportWideCc01ExtensionId(this->recvRtpHeaderExtensionIds.transportWideCc01);
 
 		auto nowMs = DepLibUV::GetTimeMs();

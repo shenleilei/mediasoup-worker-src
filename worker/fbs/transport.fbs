@@ -115,6 +115,7 @@ table RecvRtpHeaderExtensions {
     rid: uint8 = null;
     rrid: uint8 = null;
     abs_send_time: uint8 = null;
+    abs_capture_time: uint8 = null;
     transport_wide_cc01: uint8 = null;
 }
 
@@ -251,4 +252,3 @@ table TraceNotification {
     direction: FBS.Common.TraceDirection;
     info: TraceInfo;
 }
-

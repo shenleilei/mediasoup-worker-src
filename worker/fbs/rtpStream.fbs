@@ -62,6 +62,11 @@ table BaseStats {
     rtx_ssrc: uint32 = null;
     rtx_packets_discarded: uint64;
     round_trip_time: float;
+    abs_capture_timestamp_ntp: uint64 = null;
+    estimated_capture_clock_offset: int64 = null;
+    abs_capture_timestamp_ms: uint64 = null;
+    estimated_capture_clock_offset_ms: int64 = null;
+    abs_capture_receive_delta_ms: int64 = null;
 }
 
 table RecvStats {
@@ -79,4 +84,3 @@ table SendStats {
     byte_count: uint64;
     bitrate: uint32;
 }
-
