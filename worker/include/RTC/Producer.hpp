@@ -99,6 +99,33 @@ namespace RTC
 		  RTC::Producer::Listener* listener,
 		  const FBS::Transport::ProduceRequest* data);
 		~Producer() override;
+		void setContext(std::string roomId, std::string peerId)
+		{
+			this->roomId = std::move(roomId);
+			this->peerId = std::move(peerId);
+		}
+		const std::string& GetRoomId() const
+		{
+			return this->roomId;
+		}
+		const std::string& GetPeerId() const
+		{
+			return this->peerId;
+		}
+		std::string logPrefix() const
+		{
+			if (this->roomId.empty() && this->peerId.empty())
+			{
+				return "[" + this->id + "]";
+			}
+
+			if (this->peerId.empty())
+			{
+				return "[" + this->roomId + " " + this->id + "]";
+			}
+
+			return "[" + this->roomId + " " + this->peerId + " " + this->id + "]";
+		}
 
 	public:
 		flatbuffers::Offset<FBS::Producer::DumpResponse> FillBuffer(
@@ -206,6 +233,8 @@ namespace RTC
 		bool videoOrientationDetected{ false };
 		struct VideoOrientation videoOrientation;
 		struct TraceEventTypes traceEventTypes;
+		std::string roomId;
+		std::string peerId;
 		// Static buffer.
 		thread_local static uint8_t* buffer;
 	};

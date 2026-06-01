@@ -250,7 +250,7 @@ namespace RTC
 
 				this->paused = true;
 
-				MS_DEBUG_DEV("Consumer paused [consumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s Consumer paused", this->logPrefix());
 
 				if (wasActive)
 				{
@@ -273,7 +273,7 @@ namespace RTC
 
 				this->paused = false;
 
-				MS_DEBUG_DEV("Consumer resumed [consumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s Consumer resumed", this->logPrefix());
 
 				if (IsActive())
 				{
@@ -373,7 +373,7 @@ namespace RTC
 
 		this->transportConnected = true;
 
-		MS_DEBUG_DEV("Transport connected [consumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Transport connected", this->logPrefix());
 
 		UserOnTransportConnected();
 	}
@@ -381,7 +381,7 @@ namespace RTC
 	void Consumer::TransportDisconnected()
 	{
 		MS_TRACE();
-		MS_ERROR_STD("Consumer::TransportDisconnected [consumerId:%s]", this->id.c_str());
+		MS_ERROR_STD("%s Consumer::TransportDisconnected", this->logPrefix());
 
 		if (!this->transportConnected)
 		{
@@ -390,7 +390,7 @@ namespace RTC
 
 		this->transportConnected = false;
 
-		MS_DEBUG_DEV("Transport disconnected [consumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Transport disconnected", this->logPrefix());
 
 		UserOnTransportDisconnected();
 	}
@@ -408,7 +408,7 @@ namespace RTC
 
 		this->producerPaused = true;
 
-		MS_DEBUG_DEV("Producer paused [consumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Producer paused", this->logPrefix());
 
 		if (wasActive)
 		{
@@ -429,7 +429,7 @@ namespace RTC
 
 		this->producerPaused = false;
 
-		MS_DEBUG_DEV("Producer resumed [consumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Producer resumed", this->logPrefix());
 
 		if (IsActive())
 		{
@@ -452,16 +452,16 @@ namespace RTC
 	void Consumer::ProducerClosed()
 	{
 		MS_TRACE();
-		MS_ERROR_STD("Consumer::ProducerClosed start [consumerId:%s]", this->id.c_str());
+		MS_ERROR_STD("%s Consumer::ProducerClosed start", this->logPrefix());
 
 		this->producerClosed = true;
 
-		MS_DEBUG_DEV("Producer closed [consumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Producer closed", this->logPrefix());
 
 		this->shared->channelNotifier->Emit(this->id, FBS::Notification::Event::CONSUMER_PRODUCER_CLOSE);
 
 		this->listener->OnConsumerProducerClosed(this);
-		MS_ERROR_STD("Consumer::ProducerClosed done [consumerId:%s]", this->id.c_str());
+		MS_ERROR_STD("%s Consumer::ProducerClosed done", this->logPrefix());
 	}
 
 	void Consumer::EmitTraceEventRtpAndKeyFrameTypes(RTC::RtpPacket* packet, bool isRtx) const

@@ -391,7 +391,7 @@ namespace RTC
 
 				this->paused = true;
 
-				MS_DEBUG_DEV("Producer paused [producerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s Producer paused", this->logPrefix());
 
 				this->listener->OnProducerPaused(this);
 
@@ -419,7 +419,7 @@ namespace RTC
 
 				this->paused = false;
 
-				MS_DEBUG_DEV("Producer resumed [producerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s Producer resumed", this->logPrefix());
 
 				this->listener->OnProducerResumed(this);
 
@@ -553,7 +553,7 @@ namespace RTC
 
 			default:
 			{
-				MS_ERROR("unknown event '%s'", notification->eventCStr);
+				MS_ERROR("%s unknown event '%s'", this->logPrefix(), notification->eventCStr);
 			}
 		}
 	}

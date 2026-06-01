@@ -640,6 +640,8 @@ namespace RTC
 
 				// This may throw.
 				auto* producer = new RTC::Producer(this->shared, producerId, this, body);
+				producer->setContext(this->roomId, this->peerId);
+				producer->setContext(this->roomId, this->peerId);
 
 				// Insert the Producer into the RtpListener.
 				// This may throw. If so, delete the Producer and throw.
@@ -672,7 +674,7 @@ namespace RTC
 				// Insert into the map.
 				this->mapProducers[producerId] = producer;
 
-				MS_DEBUG_DEV("Producer created [producerId:%s]", producerId.c_str());
+				MS_DEBUG_DEV("%s Producer created", producer->logPrefix().c_str());
 
 				// Take the transport related RTP header extensions of the Producer and
 				// add them to the Transport.
@@ -819,6 +821,7 @@ namespace RTC
 					{
 						// This may throw.
 						consumer = new RTC::SimpleConsumer(this->shared, consumerId, producerId, this, body);
+						consumer->setContext(this->roomId, this->peerId);
 
 						break;
 					}
@@ -827,6 +830,7 @@ namespace RTC
 					{
 						// This may throw.
 						consumer = new RTC::SimulcastConsumer(this->shared, consumerId, producerId, this, body);
+						consumer->setContext(this->roomId, this->peerId);
 
 						break;
 					}
@@ -835,6 +839,7 @@ namespace RTC
 					{
 						// This may throw.
 						consumer = new RTC::SvcConsumer(this->shared, consumerId, producerId, this, body);
+						consumer->setContext(this->roomId, this->peerId);
 
 						break;
 					}
@@ -843,6 +848,7 @@ namespace RTC
 					{
 						// This may throw.
 						consumer = new RTC::PipeConsumer(this->shared, consumerId, producerId, this, body);
+						consumer->setContext(this->roomId, this->peerId);
 
 						break;
 					}
@@ -874,8 +880,7 @@ namespace RTC
 					this->mapRtxSsrcConsumer[ssrc] = consumer;
 				}
 
-				MS_DEBUG_DEV(
-				  "Consumer created [consumerId:%s, producerId:%s]", consumerId.c_str(), producerId.c_str());
+				MS_DEBUG_DEV("%s Consumer created [producerId:%s]", consumer->logPrefix().c_str(), producerId.c_str());
 
 				flatbuffers::Offset<FBS::Consumer::ConsumerLayers> preferredLayersOffset;
 				auto preferredLayers = consumer->GetPreferredLayers();
@@ -1068,6 +1073,7 @@ namespace RTC
 				// This may throw.
 				auto* dataProducer =
 				  new RTC::DataProducer(this->shared, dataProducerId, this->maxMessageSize, this, body);
+				dataProducer->setContext(this->roomId, this->peerId);
 
 				// Verify the type of the DataProducer.
 				switch (dataProducer->GetType())
@@ -1138,7 +1144,7 @@ namespace RTC
 				// Insert into the map.
 				this->mapDataProducers[dataProducerId] = dataProducer;
 
-				MS_DEBUG_DEV("DataProducer created [dataProducerId:%s]", dataProducerId.c_str());
+				MS_DEBUG_DEV("%s DataProducer created", dataProducer->logPrefix());
 
 				auto dumpOffset = dataProducer->FillBuffer(request->GetBufferBuilder());
 
@@ -1172,6 +1178,7 @@ namespace RTC
 				  this,
 				  body,
 				  this->maxMessageSize);
+				dataConsumer->setContext(this->roomId, this->peerId);
 
 				// Verify the type of the DataConsumer.
 				switch (dataConsumer->GetType())
@@ -1221,10 +1228,7 @@ namespace RTC
 				// Insert into the maps.
 				this->mapDataConsumers[dataConsumerId] = dataConsumer;
 
-				MS_DEBUG_DEV(
-				  "DataConsumer created [dataConsumerId:%s, dataProducerId:%s]",
-				  dataConsumerId.c_str(),
-				  dataProducerId.c_str());
+				MS_DEBUG_DEV("%s DataConsumer created [dataProducerId:%s]", dataConsumer->logPrefix(), dataProducerId.c_str());
 
 				auto dumpOffset = dataConsumer->FillBuffer(request->GetBufferBuilder());
 
@@ -1448,6 +1452,16 @@ namespace RTC
 
 			default:
 			{
+				MS_ERROR_STD(
+				  "unknown method '%s' [transportId:%s roomId:%s peerId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
+				  request->methodCStr,
+				  this->id.c_str(),
+				  this->roomId_.empty() ? "-" : this->roomId_.c_str(),
+				  this->peerId_.empty() ? "-" : this->peerId_.c_str(),
+				  this->mapProducers.size(),
+				  this->mapConsumers.size(),
+				  this->mapDataProducers.size(),
+				  this->mapDataConsumers.size());
 				MS_THROW_ERROR("unknown method '%s'", request->methodCStr);
 			}
 		}
@@ -1471,7 +1485,16 @@ namespace RTC
 		{
 			default:
 			{
-				MS_ERROR("unknown event '%s'", notification->eventCStr);
+				MS_ERROR(
+				  "unknown event '%s' [transportId:%s roomId:%s peerId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
+				  notification->eventCStr,
+				  this->id.c_str(),
+				  this->roomId_.empty() ? "-" : this->roomId_.c_str(),
+				  this->peerId_.empty() ? "-" : this->peerId_.c_str(),
+				  this->mapProducers.size(),
+				  this->mapConsumers.size(),
+				  this->mapDataProducers.size(),
+				  this->mapDataConsumers.size());
 			}
 		}
 	}

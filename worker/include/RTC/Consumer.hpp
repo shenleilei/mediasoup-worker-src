@@ -67,6 +67,33 @@ namespace RTC
 		  const FBS::Transport::ConsumeRequest* data,
 		  RTC::RtpParameters::Type type);
 		~Consumer() override;
+		void setContext(std::string roomId, std::string peerId)
+		{
+			this->roomId = std::move(roomId);
+			this->peerId = std::move(peerId);
+		}
+		const std::string& GetRoomId() const
+		{
+			return this->roomId;
+		}
+		const std::string& GetPeerId() const
+		{
+			return this->peerId;
+		}
+		std::string logPrefix() const
+		{
+			if (this->roomId.empty() && this->peerId.empty())
+			{
+				return "[" + this->id + "]";
+			}
+
+			if (this->peerId.empty())
+			{
+				return "[" + this->roomId + " " + this->id + "]";
+			}
+
+			return "[" + this->roomId + " " + this->peerId + " " + this->id + "]";
+		}
 
 	public:
 		flatbuffers::Offset<FBS::Consumer::BaseConsumerDump> FillBuffer(
@@ -203,6 +230,8 @@ namespace RTC
 		bool externallyManagedBitrate{ false };
 		uint8_t priority{ 1u };
 		struct TraceEventTypes traceEventTypes;
+		std::string roomId;
+		std::string peerId;
 
 	private:
 		// Others.
