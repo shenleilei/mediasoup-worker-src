@@ -215,7 +215,7 @@ NetworkControlUpdate GoogCcNetworkController::OnProcessInterval(
 NetworkControlUpdate GoogCcNetworkController::OnRemoteBitrateReport(
     RemoteBitrateReport msg) {
   if (packet_feedback_only_) {
-    MS_ERROR("Received REMB for packet feedback only GoogCC");
+    MS_DEBUG_DEV("Received REMB for packet feedback only GoogCC");
     return NetworkControlUpdate();
   }
   bandwidth_estimation_->UpdateReceiverEstimate(msg.receive_time,

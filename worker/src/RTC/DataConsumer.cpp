@@ -11,6 +11,20 @@ namespace RTC
 {
 	/* Instance methods. */
 
+	void DataConsumer::setContext(std::string roomId, std::string peerId)
+	{
+		this->roomId = std::move(roomId);
+		this->peerId = std::move(peerId);
+	}
+
+	const char* DataConsumer::logPrefix() const
+	{
+		thread_local std::string prefix;
+		prefix = '[' + this->roomId + ' ' + this->peerId + ' ' + this->id + ']';
+
+		return prefix.c_str();
+	}
+
 	DataConsumer::DataConsumer(
 	  RTC::Shared* shared,
 	  const std::string& id,
@@ -180,7 +194,7 @@ namespace RTC
 
 				this->paused = true;
 
-				MS_DEBUG_DEV("DataConsumer paused [dataConsumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s DataConsumer paused", this->logPrefix());
 
 				request->Accept();
 
@@ -198,7 +212,7 @@ namespace RTC
 
 				this->paused = false;
 
-				MS_DEBUG_DEV("DataConsumer resumed [dataConsumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s DataConsumer resumed", this->logPrefix());
 
 				request->Accept();
 
@@ -387,6 +401,7 @@ namespace RTC
 
 			default:
 			{
+				MS_ERROR("%s unknown method '%s'", this->logPrefix(), request->methodCStr);
 				MS_THROW_ERROR("unknown method '%s'", request->methodCStr);
 			}
 		}
@@ -398,7 +413,7 @@ namespace RTC
 
 		this->transportConnected = true;
 
-		MS_DEBUG_DEV("Transport connected [dataConsumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Transport connected", this->logPrefix());
 	}
 
 	void DataConsumer::TransportDisconnected()
@@ -407,7 +422,7 @@ namespace RTC
 
 		this->transportConnected = false;
 
-		MS_DEBUG_DEV("Transport disconnected [dataConsumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s Transport disconnected", this->logPrefix());
 	}
 
 	void DataConsumer::DataProducerPaused()
@@ -421,7 +436,7 @@ namespace RTC
 
 		this->dataProducerPaused = true;
 
-		MS_DEBUG_DEV("DataProducer paused [dataConsumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s DataProducer paused", this->logPrefix());
 
 		this->shared->channelNotifier->Emit(
 		  this->id, FBS::Notification::Event::DATACONSUMER_DATAPRODUCER_PAUSE);
@@ -438,7 +453,7 @@ namespace RTC
 
 		this->dataProducerPaused = false;
 
-		MS_DEBUG_DEV("DataProducer resumed [dataConsumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s DataProducer resumed", this->logPrefix());
 
 		this->shared->channelNotifier->Emit(
 		  this->id, FBS::Notification::Event::DATACONSUMER_DATAPRODUCER_RESUME);
@@ -450,7 +465,7 @@ namespace RTC
 
 		this->sctpAssociationConnected = true;
 
-		MS_DEBUG_DEV("SctpAssociation connected [dataConsumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s SctpAssociation connected", this->logPrefix());
 	}
 
 	void DataConsumer::SctpAssociationClosed()
@@ -459,7 +474,7 @@ namespace RTC
 
 		this->sctpAssociationConnected = false;
 
-		MS_DEBUG_DEV("SctpAssociation closed [dataConsumerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s SctpAssociation closed", this->logPrefix());
 	}
 
 	void DataConsumer::SctpAssociationBufferedAmount(uint32_t bufferedAmount)
@@ -507,7 +522,7 @@ namespace RTC
 
 		this->dataProducerClosed = true;
 
-		MS_DEBUG_DEV("DataProducer closed [dataConsumerId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("%s DataProducer closed", this->logPrefix());
 
 		this->shared->channelNotifier->Emit(
 		  this->id, FBS::Notification::Event::DATACONSUMER_DATAPRODUCER_CLOSE);

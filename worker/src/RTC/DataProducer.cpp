@@ -11,6 +11,20 @@ namespace RTC
 {
 	/* Instance methods. */
 
+	void DataProducer::setContext(std::string roomId, std::string peerId)
+	{
+		this->roomId = std::move(roomId);
+		this->peerId = std::move(peerId);
+	}
+
+	const char* DataProducer::logPrefix() const
+	{
+		thread_local std::string prefix;
+		prefix = '[' + this->roomId + ' ' + this->peerId + ' ' + this->id + ']';
+
+		return prefix.c_str();
+	}
+
 	DataProducer::DataProducer(
 	  RTC::Shared* shared,
 	  const std::string& id,
@@ -154,7 +168,7 @@ namespace RTC
 
 				this->paused = true;
 
-				MS_DEBUG_DEV("DataProducer paused [dataProducerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s DataProducer paused", this->logPrefix());
 
 				this->listener->OnDataProducerPaused(this);
 
@@ -174,7 +188,7 @@ namespace RTC
 
 				this->paused = false;
 
-				MS_DEBUG_DEV("DataProducer resumed [dataProducerId:%s]", this->id.c_str());
+				MS_DEBUG_DEV("%s DataProducer resumed", this->logPrefix());
 
 				this->listener->OnDataProducerResumed(this);
 
@@ -185,6 +199,7 @@ namespace RTC
 
 			default:
 			{
+				MS_ERROR("%s unknown method '%s'", this->logPrefix(), request->methodCStr);
 				MS_THROW_ERROR("unknown method '%s'", request->methodCStr);
 			}
 		}
@@ -239,7 +254,7 @@ namespace RTC
 
 			default:
 			{
-				MS_ERROR("unknown event '%s'", notification->eventCStr);
+				MS_ERROR("%s unknown event '%s'", this->logPrefix(), notification->eventCStr);
 			}
 		}
 	}

@@ -87,14 +87,14 @@ namespace RTC
 			// Out of order packet or already handled NACKed packet.
 			if (!isRecovered)
 			{
-				MS_WARN_DEV(
+				MS_DEBUG_DEV(
 				  "ignoring older packet not present in the NACK list [ssrc:%" PRIu32 ", seq:%" PRIu16 "]",
 				  packet->GetSsrc(),
 				  packet->GetSequenceNumber());
 			}
 			else
 			{
-				MS_WARN_DEV(
+				MS_DEBUG_DEV(
 				  "late recovered packet not present in the NACK list [ssrc:%" PRIu32 ", seq:%" PRIu16
 				  ", lastSeq:%" PRIu16 ", nackList:%zu, recovered:%zu]",
 				  packet->GetSsrc(),
@@ -139,7 +139,7 @@ namespace RTC
 
 			// Do not let a packet pass if it's newer than last seen seq and came via
 			// RTX.
-			MS_WARN_DEV(
+			MS_DEBUG_DEV(
 			  "newer recovered packet bypassed repair [ssrc:%" PRIu32 ", seq:%" PRIu16
 			  ", lastSeq:%" PRIu16 ", nackList:%zu, recovered:%zu]",
 			  packet->GetSsrc(),
@@ -180,7 +180,7 @@ namespace RTC
 
 		if (numNewNacks >= 32u)
 		{
-			MS_WARN_DEV(
+			MS_DEBUG_DEV(
 			  "adding large packet gap to NACK list [seqStart:%" PRIu16 ", seqEnd:%" PRIu16
 			  ", count:%" PRIu16 ", lastSeq:%" PRIu16 ", currentNackList:%zu, keyFrames:%zu, recovered:%zu]",
 			  seqStart,

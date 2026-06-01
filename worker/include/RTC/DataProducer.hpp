@@ -51,6 +51,8 @@ namespace RTC
 		~DataProducer() override;
 
 	public:
+		void setContext(std::string roomId, std::string peerId);
+		const char* logPrefix() const;
 		flatbuffers::Offset<FBS::DataProducer::DumpResponse> FillBuffer(
 		  flatbuffers::FlatBufferBuilder& builder) const;
 		flatbuffers::Offset<FBS::DataProducer::GetStatsResponse> FillBufferStats(
@@ -87,6 +89,8 @@ namespace RTC
 		const std::string id;
 
 	private:
+		std::string roomId;
+		std::string peerId;
 		// Passed by argument.
 		RTC::Shared* shared{ nullptr };
 		size_t maxMessageSize{ 0u };

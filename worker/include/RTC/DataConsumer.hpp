@@ -55,6 +55,8 @@ namespace RTC
 		~DataConsumer() override;
 
 	public:
+		void setContext(std::string roomId, std::string peerId);
+		const char* logPrefix() const;
 		flatbuffers::Offset<FBS::DataConsumer::DumpResponse> FillBuffer(
 		  flatbuffers::FlatBufferBuilder& builder) const;
 		flatbuffers::Offset<FBS::DataConsumer::GetStatsResponse> FillBufferStats(
@@ -116,6 +118,8 @@ namespace RTC
 		const std::string dataProducerId;
 
 	private:
+		std::string roomId;
+		std::string peerId;
 		// Passed by argument.
 		RTC::Shared* shared{ nullptr };
 		RTC::SctpAssociation* sctpAssociation{ nullptr };

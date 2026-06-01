@@ -368,7 +368,7 @@ namespace RTC
 
 		if (!IsActive())
 		{
-			MS_WARN_DEV(
+			MS_DEBUG_DEV(
 			  "simple consumer inactive, dropping packet [consumerId:%s, producerId:%s, seq:%" PRIu16 "]",
 			  this->id.c_str(),
 			  this->producerId.c_str(),
@@ -387,7 +387,7 @@ namespace RTC
 		if (!this->supportedCodecPayloadTypes[payloadType])
 		{
 			MS_DEBUG_DEV("payload type not supported [payloadType:%" PRIu8 "]", payloadType);
-			MS_WARN_DEV(
+			MS_DEBUG_DEV(
 			  "simple consumer payload type not supported [consumerId:%s, producerId:%s, payloadType:%" PRIu8 "]",
 			  this->id.c_str(),
 			  this->producerId.c_str(),
@@ -410,7 +410,7 @@ namespace RTC
 			  packet->GetSsrc(),
 			  packet->GetSequenceNumber(),
 			  packet->GetTimestamp());
-			MS_WARN_DEV(
+			MS_DEBUG_DEV(
 			  "simple consumer codec processing dropped packet [consumerId:%s, producerId:%s, seq:%" PRIu16
 			  ", ts:%" PRIu32 "]",
 			  this->id.c_str(),
@@ -438,7 +438,7 @@ namespace RTC
 
 			if (allowSyncParameterPacket)
 			{
-				MS_WARN_DEV(
+				MS_DEBUG_DEV(
 				  "simple consumer forwarding H264 sync parameter packet while waiting for keyframe "
 				  "[consumerId:%s, producerId:%s, seq:%" PRIu16 ", ts:%" PRIu32 ", nalType:%" PRIu8 "]",
 				  this->id.c_str(),
@@ -449,15 +449,15 @@ namespace RTC
 			}
 			else
 			{
-			MS_WARN_DEV(
-			  "simple consumer waiting for keyframe [consumerId:%s, producerId:%s, seq:%" PRIu16
-			  ", ts:%" PRIu32 ", nalType:%" PRIu8 ", isKeyFrame:%s]",
-			  this->id.c_str(),
-			  this->producerId.c_str(),
-			  packet->GetSequenceNumber(),
-			  packet->GetTimestamp(),
-			  nalType,
-			  packet->IsKeyFrame() ? "true" : "false");
+				MS_DEBUG_DEV(
+				  "simple consumer waiting for keyframe [consumerId:%s, producerId:%s, seq:%" PRIu16
+				  ", ts:%" PRIu32 ", nalType:%" PRIu8 ", isKeyFrame:%s]",
+				  this->id.c_str(),
+				  this->producerId.c_str(),
+				  packet->GetSequenceNumber(),
+				  packet->GetTimestamp(),
+				  nalType,
+				  packet->IsKeyFrame() ? "true" : "false");
 #ifdef MS_RTC_LOGGER_RTP
 			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::NOT_A_KEYFRAME);
 #endif
@@ -566,7 +566,7 @@ namespace RTC
 		// Process the packet.
 		if (this->rtpStream->ReceivePacket(packet, sharedPacket))
 		{
-			MS_WARN_DEV(
+			MS_DEBUG_DEV(
 			  "simple consumer sending RTP [consumerId:%s, producerId:%s, seq:%" PRIu16 ", ts:%" PRIu32
 			  ", marker:%s, keyframe:%s]",
 			  this->id.c_str(),
