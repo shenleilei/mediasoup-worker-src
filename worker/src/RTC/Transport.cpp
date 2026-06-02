@@ -640,8 +640,6 @@ namespace RTC
 
 				// This may throw.
 				auto* producer = new RTC::Producer(this->shared, producerId, this, body);
-				producer->setContext(this->roomId, this->peerId);
-				producer->setContext(this->roomId, this->peerId);
 
 				// Insert the Producer into the RtpListener.
 				// This may throw. If so, delete the Producer and throw.
@@ -817,41 +815,37 @@ namespace RTC
 
 				switch (type)
 				{
-					case RTC::RtpParameters::Type::SIMPLE:
-					{
-						// This may throw.
-						consumer = new RTC::SimpleConsumer(this->shared, consumerId, producerId, this, body);
-						consumer->setContext(this->roomId, this->peerId);
+						case RTC::RtpParameters::Type::SIMPLE:
+						{
+							// This may throw.
+							consumer = new RTC::SimpleConsumer(this->shared, consumerId, producerId, this, body);
 
-						break;
-					}
+							break;
+						}
 
-					case RTC::RtpParameters::Type::SIMULCAST:
-					{
-						// This may throw.
-						consumer = new RTC::SimulcastConsumer(this->shared, consumerId, producerId, this, body);
-						consumer->setContext(this->roomId, this->peerId);
+						case RTC::RtpParameters::Type::SIMULCAST:
+						{
+							// This may throw.
+							consumer = new RTC::SimulcastConsumer(this->shared, consumerId, producerId, this, body);
 
-						break;
-					}
+							break;
+						}
 
-					case RTC::RtpParameters::Type::SVC:
-					{
-						// This may throw.
-						consumer = new RTC::SvcConsumer(this->shared, consumerId, producerId, this, body);
-						consumer->setContext(this->roomId, this->peerId);
+						case RTC::RtpParameters::Type::SVC:
+						{
+							// This may throw.
+							consumer = new RTC::SvcConsumer(this->shared, consumerId, producerId, this, body);
 
-						break;
-					}
+							break;
+						}
 
-					case RTC::RtpParameters::Type::PIPE:
-					{
-						// This may throw.
-						consumer = new RTC::PipeConsumer(this->shared, consumerId, producerId, this, body);
-						consumer->setContext(this->roomId, this->peerId);
+						case RTC::RtpParameters::Type::PIPE:
+						{
+							// This may throw.
+							consumer = new RTC::PipeConsumer(this->shared, consumerId, producerId, this, body);
 
-						break;
-					}
+							break;
+						}
 				}
 
 				// Notify the listener.
@@ -1070,10 +1064,9 @@ namespace RTC
 				// This may throw.
 				CheckNoDataProducer(dataProducerId);
 
-				// This may throw.
-				auto* dataProducer =
-				  new RTC::DataProducer(this->shared, dataProducerId, this->maxMessageSize, this, body);
-				dataProducer->setContext(this->roomId, this->peerId);
+					// This may throw.
+					auto* dataProducer =
+					  new RTC::DataProducer(this->shared, dataProducerId, this->maxMessageSize, this, body);
 
 				// Verify the type of the DataProducer.
 				switch (dataProducer->GetType())
@@ -1174,11 +1167,10 @@ namespace RTC
 				  this->shared,
 				  dataConsumerId,
 				  dataProducerId,
-				  this->sctpAssociation,
-				  this,
-				  body,
-				  this->maxMessageSize);
-				dataConsumer->setContext(this->roomId, this->peerId);
+					  this->sctpAssociation,
+					  this,
+					  body,
+					  this->maxMessageSize);
 
 				// Verify the type of the DataConsumer.
 				switch (dataConsumer->GetType())
@@ -1453,11 +1445,9 @@ namespace RTC
 			default:
 			{
 				MS_ERROR_STD(
-				  "unknown method '%s' [transportId:%s roomId:%s peerId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
+				  "unknown method '%s' [transportId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
 				  request->methodCStr,
 				  this->id.c_str(),
-				  this->roomId_.empty() ? "-" : this->roomId_.c_str(),
-				  this->peerId_.empty() ? "-" : this->peerId_.c_str(),
 				  this->mapProducers.size(),
 				  this->mapConsumers.size(),
 				  this->mapDataProducers.size(),
@@ -1486,11 +1476,9 @@ namespace RTC
 			default:
 			{
 				MS_ERROR(
-				  "unknown event '%s' [transportId:%s roomId:%s peerId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
+				  "unknown event '%s' [transportId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
 				  notification->eventCStr,
 				  this->id.c_str(),
-				  this->roomId_.empty() ? "-" : this->roomId_.c_str(),
-				  this->peerId_.empty() ? "-" : this->peerId_.c_str(),
 				  this->mapProducers.size(),
 				  this->mapConsumers.size(),
 				  this->mapDataProducers.size(),

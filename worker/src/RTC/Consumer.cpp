@@ -381,7 +381,7 @@ namespace RTC
 	void Consumer::TransportDisconnected()
 	{
 		MS_TRACE();
-		MS_ERROR_STD("%s Consumer::TransportDisconnected", this->logPrefix());
+		MS_ERROR_STD("%s Consumer::TransportDisconnected", this->logPrefix().c_str());
 
 		if (!this->transportConnected)
 		{
@@ -452,7 +452,7 @@ namespace RTC
 	void Consumer::ProducerClosed()
 	{
 		MS_TRACE();
-		MS_ERROR_STD("%s Consumer::ProducerClosed start", this->logPrefix());
+		MS_ERROR_STD("%s Consumer::ProducerClosed start", this->logPrefix().c_str());
 
 		this->producerClosed = true;
 
@@ -461,7 +461,7 @@ namespace RTC
 		this->shared->channelNotifier->Emit(this->id, FBS::Notification::Event::CONSUMER_PRODUCER_CLOSE);
 
 		this->listener->OnConsumerProducerClosed(this);
-		MS_ERROR_STD("%s Consumer::ProducerClosed done", this->logPrefix());
+		MS_ERROR_STD("%s Consumer::ProducerClosed done", this->logPrefix().c_str());
 	}
 
 	void Consumer::EmitTraceEventRtpAndKeyFrameTypes(RTC::RtpPacket* packet, bool isRtx) const

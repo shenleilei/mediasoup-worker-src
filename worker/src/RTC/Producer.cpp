@@ -553,7 +553,7 @@ namespace RTC
 
 			default:
 			{
-				MS_ERROR("%s unknown event '%s'", this->logPrefix(), notification->eventCStr);
+				MS_ERROR("%s unknown event '%s'", this->logPrefix().c_str(), notification->eventCStr);
 			}
 		}
 	}
