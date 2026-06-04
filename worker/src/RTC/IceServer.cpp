@@ -291,6 +291,11 @@ namespace RTC
 			// Or just emit 'disconnected'.
 			else
 			{
+				MS_WARN_TAG(
+				  ice,
+				  "transition from state '%s' to 'disconnected' [reason:selected tuple removed]",
+				  this->state == IceState::CONNECTED ? "connected" : "completed");
+
 				// Update state.
 				this->state = IceState::DISCONNECTED;
 
@@ -560,7 +565,7 @@ namespace RTC
 
 				if (!hasUseCandidate && !hasNomination)
 				{
-					MS_DEBUG_TAG(
+					MS_WARN_TAG(
 					  ice,
 					  "transition from state 'new' to 'connected' [hasUseCandidate:%s, hasNomination:%s, nomination:%" PRIu32
 					  "]",
@@ -587,7 +592,7 @@ namespace RTC
 
 					if ((hasNomination && nomination > this->remoteNomination) || !hasNomination)
 					{
-						MS_DEBUG_TAG(
+						MS_WARN_TAG(
 						  ice,
 						  "transition from state 'new' to 'completed' [hasUseCandidate:%s, hasNomination:%s, nomination:%" PRIu32
 						  "]",
@@ -622,7 +627,7 @@ namespace RTC
 
 				if (!hasUseCandidate && !hasNomination)
 				{
-					MS_DEBUG_TAG(
+					MS_WARN_TAG(
 					  ice,
 					  "transition from state 'disconnected' to 'connected' [hasUseCandidate:%s, hasNomination:%s, nomination:%" PRIu32
 					  "]",
@@ -649,7 +654,7 @@ namespace RTC
 
 					if ((hasNomination && nomination > this->remoteNomination) || !hasNomination)
 					{
-						MS_DEBUG_TAG(
+						MS_WARN_TAG(
 						  ice,
 						  "transition from state 'disconnected' to 'completed' [hasUseCandidate:%s, hasNomination:%s, nomination:%" PRIu32
 						  "]",
@@ -692,7 +697,7 @@ namespace RTC
 				}
 				else
 				{
-					MS_DEBUG_TAG(
+					MS_WARN_TAG(
 					  ice,
 					  "transition from state 'connected' to 'completed' [hasUseCandidate:%s, hasNomination:%s, nomination:%" PRIu32
 					  "]",
