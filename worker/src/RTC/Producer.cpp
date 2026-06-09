@@ -798,19 +798,49 @@ namespace RTC
 
 		if (!this->keyFrameRequestManager || this->paused)
 		{
+			MS_DEBUG_DEV(
+			  "producer key frame request ignored [producerId:%s, mappedSsrc:%" PRIu32
+			  ", hasManager:%s, paused:%s]",
+			  this->id.c_str(),
+			  mappedSsrc,
+			  this->keyFrameRequestManager ? "true" : "false",
+			  this->paused ? "true" : "false");
 			return;
 		}
 
+		uint32_t ssrc{ 0u };
 		auto it = this->mapMappedSsrcSsrc.find(mappedSsrc);
 
-		if (it == this->mapMappedSsrcSsrc.end())
+		if (it != this->mapMappedSsrcSsrc.end())
 		{
-			MS_WARN_2TAGS(rtcp, rtx, "given mappedSsrc not found, ignoring");
+			ssrc = it->second;
+		}
+		else
+		{
+			for (const auto& encodingMapping : this->rtpMapping.encodings)
+			{
+				if (encodingMapping.mappedSsrc == mappedSsrc && encodingMapping.ssrc != 0u)
+				{
+					ssrc = encodingMapping.ssrc;
+					MS_DEBUG_DEV(
+					  "producer key frame request recovered ssrc from static rtpMapping [producerId:%s, mappedSsrc:%" PRIu32 ", ssrc:%" PRIu32 "]",
+					  this->id.c_str(),
+					  mappedSsrc,
+					  ssrc);
+					break;
+				}
+			}
+		}
+
+		if (ssrc == 0u)
+		{
+			MS_WARN_DEV(
+			  "producer key frame request mappedSsrc not found [producerId:%s, mappedSsrc:%" PRIu32 "]",
+			  this->id.c_str(),
+			  mappedSsrc);
 
 			return;
 		}
-
-		const uint32_t ssrc = it->second;
 
 		// If the current RTP packet is a key frame for the given mapped SSRC do
 		// nothing since we are gonna provide Consumers with the requested key frame
@@ -827,9 +857,19 @@ namespace RTC
 		)
 		// clang-format on
 		{
+			MS_DEBUG_DEV(
+			  "producer key frame request skipped because current packet is already key frame [producerId:%s, mappedSsrc:%" PRIu32 ", ssrc:%" PRIu32 "]",
+			  this->id.c_str(),
+			  mappedSsrc,
+			  ssrc);
 			return;
 		}
 
+		MS_DEBUG_DEV(
+		  "producer key frame request scheduled [producerId:%s, mappedSsrc:%" PRIu32 ", ssrc:%" PRIu32 "]",
+		  this->id.c_str(),
+		  mappedSsrc,
+		  ssrc);
 		this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
 	}
 

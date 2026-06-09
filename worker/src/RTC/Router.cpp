@@ -859,6 +859,11 @@ namespace RTC
 		MS_TRACE();
 
 		auto* producer = this->mapConsumerProducer.at(consumer);
+		MS_DEBUG_DEV(
+		  "router forwarding consumer key frame request [consumerId:%s, producerId:%s, mappedSsrc:%" PRIu32 "]",
+		  consumer->id.c_str(),
+		  producer->id.c_str(),
+		  mappedSsrc);
 
 		producer->RequestKeyFrame(mappedSsrc);
 	}

@@ -304,6 +304,30 @@ namespace RTC
 				break;
 			}
 
+			case Channel::ChannelRequest::Method::CONSUMER_REQUEST_KEY_FRAME:
+			{
+				if (this->kind == RTC::Media::Kind::VIDEO && IsActive())
+				{
+					MS_WARN_DEV("%s consumer.requestKeyFrame", this->logPrefix().c_str());
+					RequestKeyFrame();
+				}
+				else
+				{
+					MS_WARN_DEV(
+					  "%s consumer.requestKeyFrame skipped [kind:%s active:%s paused:%s producerPaused:%s transportConnected:%s]",
+					  this->logPrefix().c_str(),
+					  this->kind == RTC::Media::Kind::VIDEO ? "video" : "audio",
+					  IsActive() ? "true" : "false",
+					  this->paused ? "true" : "false",
+					  this->producerPaused ? "true" : "false",
+					  this->transportConnected ? "true" : "false");
+				}
+
+				request->Accept();
+
+				break;
+			}
+
 			case Channel::ChannelRequest::Method::CONSUMER_ENABLE_TRACE_EVENT:
 			{
 				const auto* body = request->data->body_as<FBS::Consumer::EnableTraceEventRequest>();

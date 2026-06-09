@@ -1383,6 +1383,13 @@ namespace RTC
 		}
 	}
 
+	void SimulcastConsumer::RequestKeyFrame()
+	{
+		MS_TRACE();
+
+		RequestKeyFrames();
+	}
+
 	void SimulcastConsumer::RequestKeyFrameForTargetSpatialLayer()
 	{
 		MS_TRACE();

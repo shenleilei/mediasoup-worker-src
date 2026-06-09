@@ -86,6 +86,7 @@ namespace RTC
 		void UserOnTransportDisconnected() override;
 		void UserOnPaused() override;
 		void UserOnResumed() override;
+		void RequestKeyFrame() override;
 		void CreateRtpStream();
 		void RequestKeyFrames();
 		void RequestKeyFrameForTargetSpatialLayer();

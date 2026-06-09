@@ -187,6 +187,7 @@ namespace RTC
 		virtual void ReceiveRtcpXrReceiverReferenceTime(RTC::RTCP::ReceiverReferenceTime* report) = 0;
 		virtual uint32_t GetTransmissionRate(uint64_t nowMs)                                      = 0;
 		virtual float GetRtt() const                                                              = 0;
+		virtual void RequestKeyFrame()                                                            = 0;
 
 		/* Methods inherited from Channel::ChannelSocket::RequestHandler. */
 	public:

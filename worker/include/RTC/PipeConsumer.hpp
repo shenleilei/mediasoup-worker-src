@@ -58,7 +58,7 @@ namespace RTC
 		void UserOnPaused() override;
 		void UserOnResumed() override;
 		void CreateRtpStreams();
-		void RequestKeyFrame();
+		void RequestKeyFrame() override;
 
 		/* Pure virtual methods inherited from RtpStreamSend::Listener. */
 	public:
