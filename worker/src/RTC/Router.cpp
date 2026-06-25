@@ -510,7 +510,7 @@ namespace RTC
 	inline void Router::OnTransportProducerClosed(RTC::Transport* /*transport*/, RTC::Producer* producer)
 	{
 		MS_TRACE();
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Router::OnTransportProducerClosed start [producerId:%s]",
 		  producer->id.c_str());
 
@@ -543,7 +543,7 @@ namespace RTC
 		{
 			// Call consumer->ProducerClosed() so the Consumer will notify the Node process,
 			// will notify its Transport, and its Transport will delete the Consumer.
-			MS_ERROR_STD(
+			MS_DEBUG_DEV(
 			  "Router::OnTransportProducerClosed closing downstream consumer [producerId:%s consumerId:%s]",
 			  producer->id.c_str(),
 			  consumer->id.c_str());
@@ -562,7 +562,7 @@ namespace RTC
 		this->mapProducers.erase(mapProducersIt);
 		this->mapProducerConsumers.erase(mapProducerConsumersIt);
 		this->mapProducerRtpObservers.erase(mapProducerRtpObserversIt);
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Router::OnTransportProducerClosed done [producerId:%s]",
 		  producer->id.c_str());
 	}
@@ -782,7 +782,7 @@ namespace RTC
 	inline void Router::OnTransportConsumerClosed(RTC::Transport* /*transport*/, RTC::Consumer* consumer)
 	{
 		MS_TRACE();
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Router::OnTransportConsumerClosed start [consumerId:%s]",
 		  consumer->id.c_str());
 
@@ -819,7 +819,7 @@ namespace RTC
 
 		// Remove the Consumer from the map.
 		this->mapConsumerProducer.erase(mapConsumerProducerIt);
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Router::OnTransportConsumerClosed done [consumerId:%s]",
 		  consumer->id.c_str());
 	}
@@ -828,7 +828,7 @@ namespace RTC
 	  RTC::Transport* /*transport*/, RTC::Consumer* consumer)
 	{
 		MS_TRACE();
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Router::OnTransportConsumerProducerClosed start [consumerId:%s]",
 		  consumer->id.c_str());
 
@@ -848,7 +848,7 @@ namespace RTC
 
 		// Remove the Consumer from the map.
 		this->mapConsumerProducer.erase(mapConsumerProducerIt);
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Router::OnTransportConsumerProducerClosed done [consumerId:%s]",
 		  consumer->id.c_str());
 	}
@@ -858,7 +858,16 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		auto* producer = this->mapConsumerProducer.at(consumer);
+		auto mapConsumerProducerIt = this->mapConsumerProducer.find(consumer);
+		if (mapConsumerProducerIt == this->mapConsumerProducer.end())
+		{
+			MS_WARN_DEV(
+			  "OnTransportConsumerKeyFrameRequested ignoring already-removed consumer [consumerId:%s]",
+			  consumer->id.c_str());
+			return;
+		}
+
+		auto* producer = mapConsumerProducerIt->second;
 		MS_DEBUG_DEV(
 		  "router forwarding consumer key frame request [consumerId:%s, producerId:%s, mappedSsrc:%" PRIu32 "]",
 		  consumer->id.c_str(),

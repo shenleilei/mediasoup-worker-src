@@ -920,7 +920,7 @@ namespace RTC
 	void PlainTransport::SendStreamClosed(uint32_t ssrc)
 	{
 		MS_TRACE();
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "PlainTransport::SendStreamClosed [transportId:%s ssrc:%" PRIu32 "]",
 		  this->id.c_str(),
 		  ssrc);

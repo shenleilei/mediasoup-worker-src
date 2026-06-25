@@ -167,7 +167,7 @@ namespace RTC
 	void Transport::CloseProducersAndConsumers()
 	{
 		MS_TRACE();
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "CloseProducersAndConsumers start [transportId:%s producers:%zu consumers:%zu dataProducers:%zu dataConsumers:%zu]",
 		  this->id.c_str(),
 		  this->mapProducers.size(),
@@ -197,7 +197,7 @@ namespace RTC
 		for (auto& kv : this->mapConsumers)
 		{
 			auto* consumer = kv.second;
-			MS_ERROR_STD(
+			MS_DEBUG_DEV(
 			  "CloseProducersAndConsumers notifying consumer close [transportId:%s consumerId:%s]",
 			  this->id.c_str(),
 			  consumer->id.c_str());
@@ -210,7 +210,7 @@ namespace RTC
 		this->mapConsumers.clear();
 		this->mapSsrcConsumer.clear();
 		this->mapRtxSsrcConsumer.clear();
-		MS_ERROR_STD("CloseProducersAndConsumers consumers cleared [transportId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("CloseProducersAndConsumers consumers cleared [transportId:%s]", this->id.c_str());
 
 		// Delete all DataProducers.
 		for (auto& kv : this->mapDataProducers)
@@ -235,7 +235,7 @@ namespace RTC
 			delete dataConsumer;
 		}
 		this->mapDataConsumers.clear();
-		MS_ERROR_STD("CloseProducersAndConsumers done [transportId:%s]", this->id.c_str());
+		MS_DEBUG_DEV("CloseProducersAndConsumers done [transportId:%s]", this->id.c_str());
 	}
 
 	void Transport::ListenServerClosed()
@@ -1324,7 +1324,7 @@ namespace RTC
 
 				// This may throw.
 				RTC::Consumer* consumer = GetConsumerById(body->consumerId()->str());
-				MS_ERROR_STD(
+				MS_DEBUG_DEV(
 				  "TRANSPORT_CLOSE_CONSUMER start [transportId:%s consumerId:%s]",
 				  this->id.c_str(),
 				  consumer->id.c_str());
@@ -1350,7 +1350,7 @@ namespace RTC
 
 				// Notify the listener.
 				this->listener->OnTransportConsumerClosed(this, consumer);
-				MS_ERROR_STD(
+				MS_DEBUG_DEV(
 				  "TRANSPORT_CLOSE_CONSUMER notified listener [transportId:%s consumerId:%s]",
 				  this->id.c_str(),
 				  consumer->id.c_str());
@@ -1359,12 +1359,12 @@ namespace RTC
 
 				// Delete it.
 				delete consumer;
-				MS_ERROR_STD(
+				MS_DEBUG_DEV(
 				  "TRANSPORT_CLOSE_CONSUMER deleted consumer [transportId:%s]",
 				  this->id.c_str());
 
 				request->Accept();
-				MS_ERROR_STD(
+				MS_DEBUG_DEV(
 				  "TRANSPORT_CLOSE_CONSUMER accepted [transportId:%s]",
 				  this->id.c_str());
 
@@ -2739,7 +2739,7 @@ namespace RTC
 	inline void Transport::OnConsumerProducerClosed(RTC::Consumer* consumer)
 	{
 		MS_TRACE();
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Transport::OnConsumerProducerClosed start [transportId:%s consumerId:%s]",
 		  this->id.c_str(),
 		  consumer->id.c_str());
@@ -2765,14 +2765,14 @@ namespace RTC
 
 		// Notify the listener.
 		this->listener->OnTransportConsumerProducerClosed(this, consumer);
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Transport::OnConsumerProducerClosed notified listener [transportId:%s consumerId:%s]",
 		  this->id.c_str(),
 		  consumer->id.c_str());
 
 		// Delete it.
 		delete consumer;
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Transport::OnConsumerProducerClosed deleted consumer [transportId:%s]",
 		  this->id.c_str());
 
@@ -2781,7 +2781,7 @@ namespace RTC
 		{
 			ComputeOutgoingDesiredBitrate(/*forceBitrate*/ true);
 		}
-		MS_ERROR_STD(
+		MS_DEBUG_DEV(
 		  "Transport::OnConsumerProducerClosed done [transportId:%s]",
 		  this->id.c_str());
 	}
