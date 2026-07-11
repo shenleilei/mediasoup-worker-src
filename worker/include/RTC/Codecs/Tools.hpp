@@ -4,6 +4,7 @@
 #include "common.hpp"
 #include "RTC/Codecs/H264.hpp"
 #include "RTC/Codecs/H264_SVC.hpp"
+#include "RTC/Codecs/H265.hpp"
 #include "RTC/Codecs/Opus.hpp"
 #include "RTC/Codecs/PayloadDescriptorHandler.hpp"
 #include "RTC/Codecs/VP8.hpp"
@@ -30,6 +31,7 @@ namespace RTC
 							case RTC::RtpCodecMimeType::Subtype::VP9:
 							case RTC::RtpCodecMimeType::Subtype::H264:
 							case RTC::RtpCodecMimeType::Subtype::H264_SVC:
+							case RTC::RtpCodecMimeType::Subtype::H265:
 								return true;
 							default:
 								return false;
@@ -74,6 +76,12 @@ namespace RTC
 							case RTC::RtpCodecMimeType::Subtype::H264_SVC:
 							{
 								RTC::Codecs::H264_SVC::ProcessRtpPacket(packet);
+
+								break;
+							}
+							case RTC::RtpCodecMimeType::Subtype::H265:
+							{
+								RTC::Codecs::H265::ProcessRtpPacket(packet);
 
 								break;
 							}
@@ -181,6 +189,8 @@ namespace RTC
 								return new RTC::Codecs::H264::EncodingContext(params);
 							case RTC::RtpCodecMimeType::Subtype::H264_SVC:
 								return new RTC::Codecs::H264_SVC::EncodingContext(params);
+							case RTC::RtpCodecMimeType::Subtype::H265:
+								return new RTC::Codecs::H265::EncodingContext(params);
 							default:
 								return nullptr;
 						}

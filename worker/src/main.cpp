@@ -4,6 +4,7 @@
 #include "MediaSoupErrors.hpp"
 #include "lib.hpp"
 #include <cstdlib> // std::_Exit()
+#include <iostream>
 #include <string>
 
 static constexpr int ConsumerChannelFd{ 3 };
@@ -11,6 +12,15 @@ static constexpr int ProducerChannelFd{ 4 };
 
 int main(int argc, char* argv[])
 {
+	for (int i = 1; i < argc; ++i)
+	{
+		if (std::string(argv[i]) == "--dump-worker-features")
+		{
+			std::cout << R"({"workerFeatures":{"h265Rtp":true,"h265RtpVersion":1}})" << std::endl;
+			std::_Exit(0);
+		}
+	}
+
 	// Ensure we are called by our Node library.
 	if (!std::getenv("MEDIASOUP_VERSION"))
 	{
