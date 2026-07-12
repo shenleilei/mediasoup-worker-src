@@ -331,6 +331,7 @@ test_sources = [
   'test/src/RTC/TestRateCalculator.cpp',
   'test/src/RTC/TestRtpPacket.cpp',
   'test/src/RTC/TestRtpPacketH264Svc.cpp',
+  'test/src/RTC/TestRtpHeaderExtensionUri.cpp',
   'test/src/RTC/TestRtpRetransmissionBuffer.cpp',
   'test/src/RTC/TestRtpStreamSend.cpp',
   'test/src/RTC/TestRtpStreamRecv.cpp',

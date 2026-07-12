@@ -73,6 +73,7 @@ enum RtpHeaderExtensionUri: uint8 {
     TransportWideCcDraft01,
     AbsSendTime,
     AbsCaptureTime,
+    PlayoutDelay,
 }
 
 table RtpHeaderExtensionParameters {
@@ -125,4 +126,3 @@ table RtpMapping {
     codecs: [CodecMapping] (required);
     encodings: [EncodingMapping] (required);
 }
-

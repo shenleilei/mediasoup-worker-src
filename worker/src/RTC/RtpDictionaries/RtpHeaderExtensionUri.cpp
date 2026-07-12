@@ -2,6 +2,7 @@
 // #define MS_LOG_DEV_LEVEL 3
 
 #include "Logger.hpp"
+#include "MediaSoupErrors.hpp"
 #include "RTC/RtpDictionaries.hpp"
 
 namespace RTC
@@ -67,6 +68,16 @@ namespace RTC
 			{
 				return RtpHeaderExtensionUri::Type::ABS_CAPTURE_TIME;
 			}
+
+			case FBS::RtpParameters::RtpHeaderExtensionUri::PlayoutDelay:
+			{
+				return RtpHeaderExtensionUri::Type::PLAYOUT_DELAY;
+			}
+
+			default:
+			{
+				MS_THROW_TYPE_ERROR("invalid RTP header extension URI enum value");
+			}
 		}
 	}
 
@@ -128,6 +139,16 @@ namespace RTC
 			case RtpHeaderExtensionUri::Type::ABS_CAPTURE_TIME:
 			{
 				return FBS::RtpParameters::RtpHeaderExtensionUri::AbsCaptureTime;
+			}
+
+			case RtpHeaderExtensionUri::Type::PLAYOUT_DELAY:
+			{
+				return FBS::RtpParameters::RtpHeaderExtensionUri::PlayoutDelay;
+			}
+
+			default:
+			{
+				MS_THROW_TYPE_ERROR("invalid RTP header extension URI type");
 			}
 		}
 	}
