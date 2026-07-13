@@ -7,9 +7,211 @@
 #include "MediaSoupErrors.hpp"
 #include "RTC/Codecs/Tools.hpp"
 #include "RTC/SimpleConsumer.hpp"
+#include "Utils.hpp"
 
 namespace RTC
 {
+	namespace
+	{
+		constexpr uint8_t H264NalTypeSei{ 6u };
+		constexpr uint8_t H264NalTypeSps{ 7u };
+		constexpr uint8_t H264NalTypePps{ 8u };
+		constexpr uint8_t H264NalTypeAud{ 9u };
+		constexpr uint8_t H264NalTypeStapA{ 24u };
+		constexpr uint8_t H265NalTypeVps{ 32u };
+		constexpr uint8_t H265NalTypeSps{ 33u };
+		constexpr uint8_t H265NalTypePps{ 34u };
+		constexpr uint8_t H265NalTypeAud{ 35u };
+		constexpr uint8_t H265NalTypePrefixSei{ 39u };
+		constexpr uint8_t H265NalTypeSuffixSei{ 40u };
+		constexpr uint8_t H265NalTypeAp{ 48u };
+
+		bool IsH264SyncParameterNalType(uint8_t nalType)
+		{
+			switch (nalType)
+			{
+				case H264NalTypeSps:
+				case H264NalTypePps:
+				case H264NalTypeSei:
+				case H264NalTypeAud:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		uint8_t GetH265NalType(const uint8_t* payload)
+		{
+			return static_cast<uint8_t>((payload[0] >> 1) & 0x3F);
+		}
+
+		bool IsValidH265NalHeader(const uint8_t* payload)
+		{
+			constexpr uint8_t ForbiddenZeroBitMask{ 0x80u };
+			constexpr uint8_t TemporalIdPlusOneMask{ 0x07u };
+
+			if ((payload[0] & ForbiddenZeroBitMask) != 0u)
+			{
+				return false;
+			}
+
+			return (payload[1] & TemporalIdPlusOneMask) != 0u;
+		}
+
+		bool IsH265SyncParameterNalType(uint8_t nalType)
+		{
+			switch (nalType)
+			{
+				case H265NalTypeVps:
+				case H265NalTypeSps:
+				case H265NalTypePps:
+				case H265NalTypeAud:
+				case H265NalTypePrefixSei:
+				case H265NalTypeSuffixSei:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		bool AllowsH264SyncParameterPacket(const uint8_t* payload, size_t payloadLength)
+		{
+			if (!payload || payloadLength < 1u)
+			{
+				return false;
+			}
+
+			const uint8_t nalType = payload[0] & 0x1F;
+
+			if (IsH264SyncParameterNalType(nalType))
+			{
+				return true;
+			}
+
+			if (nalType != H264NalTypeStapA)
+			{
+				return false;
+			}
+
+			size_t offset{ 1u };
+			size_t remaining = payloadLength - 1u;
+
+			while (remaining >= 3u)
+			{
+				const auto naluSize = Utils::Byte::Get2Bytes(payload, offset);
+				if (remaining < static_cast<size_t>(naluSize) + 2u)
+				{
+					break;
+				}
+
+				const uint8_t subNalType = payload[offset + 2] & 0x1F;
+				if (IsH264SyncParameterNalType(subNalType))
+				{
+					return true;
+				}
+
+				offset += naluSize + 2u;
+				remaining -= naluSize + 2u;
+			}
+
+			return false;
+		}
+
+		bool AllowsH265SyncParameterPacket(const uint8_t* payload, size_t payloadLength)
+		{
+			if (!payload || payloadLength < 2u || !IsValidH265NalHeader(payload))
+			{
+				return false;
+			}
+
+			const uint8_t nalType = GetH265NalType(payload);
+
+			if (IsH265SyncParameterNalType(nalType))
+			{
+				return true;
+			}
+
+			if (nalType != H265NalTypeAp)
+			{
+				return false;
+			}
+
+			size_t offset{ 2u };
+			size_t remaining = payloadLength - 2u;
+			bool hasSyncParameterNal{ false };
+
+			while (remaining >= 2u)
+			{
+				const auto naluSize = Utils::Byte::Get2Bytes(payload, offset);
+
+				offset += 2u;
+				remaining -= 2u;
+
+				if (naluSize < 2u || remaining < static_cast<size_t>(naluSize))
+				{
+					return false;
+				}
+
+				if (!IsValidH265NalHeader(payload + offset))
+				{
+					return false;
+				}
+
+				const uint8_t subNalType = GetH265NalType(payload + offset);
+
+				if (subNalType >= H265NalTypeAp)
+				{
+					return false;
+				}
+
+				if (IsH265SyncParameterNalType(subNalType))
+				{
+					hasSyncParameterNal = true;
+				}
+
+				offset += naluSize;
+				remaining -= naluSize;
+			}
+
+			return hasSyncParameterNal && remaining == 0u;
+		}
+
+		bool AllowsSyncParameterPacket(
+		  const RTC::RtpCodecMimeType& mimeType, const uint8_t* payload, size_t payloadLength)
+		{
+			if (mimeType.type != RTC::RtpCodecMimeType::Type::VIDEO)
+			{
+				return false;
+			}
+
+			switch (mimeType.subtype)
+			{
+				case RTC::RtpCodecMimeType::Subtype::H264:
+					return AllowsH264SyncParameterPacket(payload, payloadLength);
+				case RTC::RtpCodecMimeType::Subtype::H265:
+					return AllowsH265SyncParameterPacket(payload, payloadLength);
+				default:
+					return false;
+			}
+		}
+
+		uint8_t GetNalTypeForLog(
+		  const RTC::RtpCodecMimeType& mimeType, const uint8_t* payload, size_t payloadLength)
+		{
+			if (!payload || payloadLength == 0u)
+			{
+				return 0u;
+			}
+
+			if (mimeType.subtype == RTC::RtpCodecMimeType::Subtype::H265 && payloadLength >= 2u)
+			{
+				return GetH265NalType(payload);
+			}
+
+			return payload[0] & 0x1F;
+		}
+	} // namespace
+
 	/* Instance methods. */
 
 	SimpleConsumer::SimpleConsumer(
@@ -305,67 +507,6 @@ namespace RTC
 		packet->logger.consumerId = this->id;
 #endif
 
-		auto allowsH264SyncParameterPacket = [this, packet]() {
-			if (this->kind != RTC::Media::Kind::VIDEO)
-			{
-				return false;
-			}
-
-			auto& encoding         = this->rtpParameters.encodings[0];
-			const auto* mediaCodec = this->rtpParameters.GetCodecForEncoding(encoding);
-
-			if (!mediaCodec || mediaCodec->mimeType.subtype != RTC::RtpCodecMimeType::Subtype::H264)
-			{
-				return false;
-			}
-
-			const auto* payload = packet->GetPayload();
-			const auto payloadLength = packet->GetPayloadLength();
-
-			if (!payload || payloadLength < 1u)
-			{
-				return false;
-			}
-
-			const uint8_t nalType = payload[0] & 0x1F;
-
-			switch (nalType)
-			{
-				case 7: // SPS
-				case 8: // PPS
-				case 6: // SEI
-				case 9: // AUD
-					return true;
-				case 24: // STAP-A
-				{
-					size_t offset{ 1u };
-					size_t remaining = payloadLength - 1u;
-
-					while (remaining >= 3u)
-					{
-						const auto naluSize = Utils::Byte::Get2Bytes(payload, offset);
-						if (remaining < static_cast<size_t>(naluSize) + 2u)
-						{
-							break;
-						}
-
-						const uint8_t subNalType = payload[offset + 2] & 0x1F;
-						if (subNalType == 7 || subNalType == 8 || subNalType == 6 || subNalType == 9)
-						{
-							return true;
-						}
-
-						offset += naluSize + 2u;
-						remaining -= naluSize + 2u;
-					}
-
-					return false;
-				}
-				default:
-					return false;
-			}
-		};
-
 		if (!IsActive())
 		{
 			MS_DEBUG_DEV(
@@ -431,18 +572,24 @@ namespace RTC
 		// the packet.
 		if (this->syncRequired && this->keyFrameSupported && !packet->IsKeyFrame())
 		{
-			const bool allowSyncParameterPacket = allowsH264SyncParameterPacket();
+			auto& encoding         = this->rtpParameters.encodings[0];
+			const auto* mediaCodec = this->rtpParameters.GetCodecForEncoding(encoding);
 			const auto* payload = packet->GetPayload();
 			const auto payloadLength = packet->GetPayloadLength();
-			const uint8_t nalType = (payload && payloadLength > 0u) ? (payload[0] & 0x1F) : 0u;
+			const bool allowSyncParameterPacket =
+			  mediaCodec && AllowsSyncParameterPacket(mediaCodec->mimeType, payload, payloadLength);
+			[[maybe_unused]] const uint8_t nalType =
+			  mediaCodec ? GetNalTypeForLog(mediaCodec->mimeType, payload, payloadLength) : 0u;
 
 			if (allowSyncParameterPacket)
 			{
 				MS_DEBUG_DEV(
-				  "simple consumer forwarding H264 sync parameter packet while waiting for keyframe "
-				  "[consumerId:%s, producerId:%s, seq:%" PRIu16 ", ts:%" PRIu32 ", nalType:%" PRIu8 "]",
+				  "simple consumer forwarding codec sync parameter packet while waiting for keyframe "
+				  "[consumerId:%s, producerId:%s, codec:%s, seq:%" PRIu16 ", ts:%" PRIu32
+				  ", nalType:%" PRIu8 "]",
 				  this->id.c_str(),
 				  this->producerId.c_str(),
+				  mediaCodec->mimeType.ToString().c_str(),
 				  packet->GetSequenceNumber(),
 				  packet->GetTimestamp(),
 				  nalType);
@@ -467,7 +614,8 @@ namespace RTC
 		}
 
 		// Whether this is the first packet after re-sync.
-		const bool isSyncPacket = this->syncRequired;
+		const bool isSyncPacket =
+		  this->syncRequired && (!this->keyFrameSupported || packet->IsKeyFrame());
 
 		// Sync sequence number and timestamp if required.
 		if (isSyncPacket)
