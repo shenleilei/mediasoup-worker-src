@@ -6,6 +6,7 @@
 #include "Logger.hpp"
 #include "MediaSoupErrors.hpp"
 #include <cstring> // std::memcpy(), std::memmove()
+#include <memory>
 
 namespace Channel
 {
@@ -13,11 +14,21 @@ namespace Channel
 	static constexpr size_t MessageMaxLen{ 4194308 };
 	static constexpr size_t PayloadMaxLen{ 4194304 };
 
+#ifdef MS_TEST
+	namespace
+	{
+		thread_local bool failNextAsyncSendForTesting{ false };
+		thread_local size_t asyncCloseCountForTesting{ 0u };
+	}
+#endif
+
 	/* Static methods for UV callbacks. */
 
 	inline static void onAsync(uv_handle_t* handle)
 	{
-		while (static_cast<ChannelSocket*>(handle->data)->CallbackRead())
+		auto* channel = static_cast<ChannelSocket*>(handle->data);
+
+		while (channel && channel->CallbackRead())
 		{
 			// Read while there are new messages.
 		}
@@ -25,16 +36,26 @@ namespace Channel
 
 	inline static void onCloseAsync(uv_handle_t* handle)
 	{
+#ifdef MS_TEST
+		++asyncCloseCountForTesting;
+#endif
 		delete reinterpret_cast<uv_async_t*>(handle);
 	}
 
 	/* Instance methods. */
 
 	ChannelSocket::ChannelSocket(int consumerFd, int producerFd)
-	  : consumerSocket(new ConsumerSocket(consumerFd, MessageMaxLen, this)),
-	    producerSocket(new ProducerSocket(producerFd, MessageMaxLen))
 	{
 		MS_TRACE_STD();
+
+		// Keep both handles locally owned until every throwing construction step
+		// has completed. A producer failure must not strand the already-active
+		// consumer handle with a listener pointer to this incomplete object.
+		auto consumer = std::make_unique<ConsumerSocket>(consumerFd, MessageMaxLen, this);
+		auto producer = std::make_unique<ProducerSocket>(producerFd, MessageMaxLen);
+
+		this->consumerSocket = consumer.release();
+		this->producerSocket = producer.release();
 	}
 
 	ChannelSocket::ChannelSocket(
@@ -62,11 +83,24 @@ namespace Channel
 			MS_THROW_ERROR_STD("uv_async_init() failed: %s", uv_strerror(err));
 		}
 
-		err = uv_async_send(this->uvReadHandle);
+#ifdef MS_TEST
+		if (failNextAsyncSendForTesting)
+		{
+			failNextAsyncSendForTesting = false;
+			err                         = UV_EINVAL;
+		}
+		else
+#endif
+		{
+			err = uv_async_send(this->uvReadHandle);
+		}
 
 		if (err != 0)
 		{
-			delete this->uvReadHandle;
+			this->uvReadHandle->data = nullptr;
+			uv_close(
+			  reinterpret_cast<uv_handle_t*>(this->uvReadHandle),
+			  static_cast<uv_close_cb>(onCloseAsync));
 			this->uvReadHandle = nullptr;
 
 			MS_THROW_ERROR_STD("uv_async_send() failed: %s", uv_strerror(err));
@@ -86,7 +120,7 @@ namespace Channel
 		delete this->producerSocket;
 	}
 
-	void ChannelSocket::Close()
+	void ChannelSocket::Close() noexcept
 	{
 		MS_TRACE_STD();
 
@@ -99,6 +133,7 @@ namespace Channel
 
 		if (this->uvReadHandle)
 		{
+			this->uvReadHandle->data = nullptr;
 			uv_close(
 			  reinterpret_cast<uv_handle_t*>(this->uvReadHandle), static_cast<uv_close_cb>(onCloseAsync));
 		}
@@ -113,6 +148,18 @@ namespace Channel
 			this->producerSocket->Close();
 		}
 	}
+
+#ifdef MS_TEST
+	void ChannelSocket::FailNextAsyncSendForTesting()
+	{
+		failNextAsyncSendForTesting = true;
+	}
+
+	size_t ChannelSocket::GetAsyncCloseCountForTesting()
+	{
+		return asyncCloseCountForTesting;
+	}
+#endif
 
 	void ChannelSocket::SetListener(Listener* listener)
 	{
@@ -186,57 +233,27 @@ namespace Channel
 		// freed later.
 		if (free)
 		{
-			const auto* message = FBS::Message::GetMessage(msg);
+			try
+			{
+				const auto* message = FBS::Message::GetMessage(msg);
 
 #if MS_LOG_DEV_LEVEL == 3
-			auto s = flatbuffers::FlatBufferToString(
-			  reinterpret_cast<uint8_t*>(msg), FBS::Message::MessageTypeTable());
-			MS_DUMP("%s", s.c_str());
+				auto s = flatbuffers::FlatBufferToString(
+				  reinterpret_cast<uint8_t*>(msg), FBS::Message::MessageTypeTable());
+				MS_DUMP("%s", s.c_str());
 #endif
 
-			if (message->data_type() == FBS::Message::Body::Request)
-			{
-				ChannelRequest* request;
-
-				try
-				{
-					request = new ChannelRequest(this, message->data_as<FBS::Request::Request>());
-
-					// Notify the listener.
-					this->listener->HandleRequest(request);
-				}
-				catch (const MediaSoupTypeError& error)
-				{
-					request->TypeError(error.what());
-				}
-				catch (const MediaSoupError& error)
-				{
-					request->Error(error.what());
-				}
-
-				delete request;
+				ProcessMessage(message);
 			}
-			else if (message->data_type() == FBS::Message::Body::Notification)
+			catch (const std::exception& error)
 			{
-				ChannelNotification* notification;
-
-				try
-				{
-					notification = new ChannelNotification(message->data_as<FBS::Notification::Notification>());
-
-					// Notify the listener.
-					this->listener->HandleNotification(notification);
-				}
-				catch (const MediaSoupError& error)
-				{
-					MS_ERROR("notification failed: %s", error.what());
-				}
-
-				delete notification;
+				MS_ERROR("channel message callback failed: %s", error.what());
+				FailClosed();
 			}
-			else
+			catch (...)
 			{
-				MS_ERROR("discarding wrong Channel data");
+				MS_ERROR("channel message callback failed with an unknown exception");
+				FailClosed();
 			}
 
 			// Message needs to be freed using stored function pointer.
@@ -245,6 +262,191 @@ namespace Channel
 
 		// Return `true` if something was processed.
 		return free != nullptr;
+	}
+
+	bool ChannelSocket::RejectRequest(ChannelRequest* request, bool typeError, const char* reason) noexcept
+	{
+		if (!request)
+		{
+			return false;
+		}
+
+		if (request->replied)
+		{
+			MS_ERROR("request handler failed after sending its response [method:%s]", request->methodCStr);
+
+			return false;
+		}
+
+		try
+		{
+			if (typeError)
+			{
+				request->TypeError(reason);
+			}
+			else
+			{
+				request->Error(reason);
+			}
+
+			return true;
+		}
+		catch (const std::exception& error)
+		{
+			MS_ERROR("failed to send request rejection: %s", error.what());
+		}
+		catch (...)
+		{
+			MS_ERROR("failed to send request rejection with an unknown exception");
+		}
+
+		return false;
+	}
+
+	void ChannelSocket::FailClosed() noexcept
+	{
+		if (this->closed)
+		{
+			return;
+		}
+
+		Close();
+
+		if (!this->listener)
+		{
+			return;
+		}
+
+		try
+		{
+			this->listener->OnChannelClosed(this);
+		}
+		catch (const std::exception& error)
+		{
+			MS_ERROR("channel close listener failed: %s", error.what());
+		}
+		catch (...)
+		{
+			MS_ERROR("channel close listener failed with an unknown exception");
+		}
+	}
+
+	void ChannelSocket::ProcessMessage(const FBS::Message::Message* message)
+	{
+		if (!message)
+		{
+			MS_ERROR("discarding null Channel message");
+			FailClosed();
+
+			return;
+		}
+
+		if (message->data_type() == FBS::Message::Body::Request)
+		{
+			const auto* requestData = message->data_as<FBS::Request::Request>();
+			std::unique_ptr<ChannelRequest> request;
+
+			if (!requestData)
+			{
+				MS_ERROR("discarding Channel request without data");
+				FailClosed();
+
+				return;
+			}
+
+			try
+			{
+				request = std::make_unique<ChannelRequest>(this, requestData);
+
+				if (!this->listener)
+				{
+					MS_THROW_ERROR("channel request received before listener registration");
+				}
+
+				this->listener->HandleRequest(request.get());
+			}
+			catch (const MediaSoupTypeError& error)
+			{
+				if (!RejectRequest(request.get(), true, error.what()))
+				{
+					FailClosed();
+				}
+			}
+			catch (const MediaSoupError& error)
+			{
+				if (request)
+				{
+					if (!RejectRequest(request.get(), false, error.what()))
+					{
+						FailClosed();
+					}
+				}
+				else if (
+				  !requestData || ChannelRequest::method2String.find(requestData->method()) !=
+				                    ChannelRequest::method2String.end())
+				{
+					// A known method failed while its ChannelRequest was still being
+					// constructed, so no reliable response object exists. Unknown methods
+					// reject themselves in the constructor before throwing.
+					MS_ERROR("request construction failed: %s", error.what());
+					FailClosed();
+				}
+			}
+			catch (const std::exception& error)
+			{
+				MS_ERROR("request callback failed: %s", error.what());
+				RejectRequest(request.get(), false, error.what());
+				FailClosed();
+			}
+			catch (...)
+			{
+				MS_ERROR("request callback failed with an unknown exception");
+				RejectRequest(request.get(), false, "unknown request failure");
+				FailClosed();
+			}
+		}
+		else if (message->data_type() == FBS::Message::Body::Notification)
+		{
+			const auto* notificationData = message->data_as<FBS::Notification::Notification>();
+
+			if (!notificationData)
+			{
+				MS_ERROR("discarding Channel notification without data");
+				FailClosed();
+
+				return;
+			}
+
+			try
+			{
+				auto notification = std::make_unique<ChannelNotification>(notificationData);
+
+				if (!this->listener)
+				{
+					MS_THROW_ERROR("channel notification received before listener registration");
+				}
+
+				this->listener->HandleNotification(notification.get());
+			}
+			catch (const MediaSoupError& error)
+			{
+				MS_ERROR("notification failed: %s", error.what());
+			}
+			catch (const std::exception& error)
+			{
+				MS_ERROR("notification callback failed: %s", error.what());
+				FailClosed();
+			}
+			catch (...)
+			{
+				MS_ERROR("notification callback failed with an unknown exception");
+				FailClosed();
+			}
+		}
+		else
+		{
+			MS_ERROR("discarding wrong Channel data");
+		}
 	}
 
 	void ChannelSocket::SendImpl(const uint8_t* payload, uint32_t payloadLen)
@@ -267,57 +469,27 @@ namespace Channel
 	{
 		MS_TRACE();
 
-		const auto* message = FBS::Message::GetMessage(msg);
+		try
+		{
+			const auto* message = FBS::Message::GetMessage(msg);
 
 #if MS_LOG_DEV_LEVEL == 3
-		auto s = flatbuffers::FlatBufferToString(
-		  reinterpret_cast<uint8_t*>(msg), FBS::Message::MessageTypeTable());
-		MS_DUMP("%s", s.c_str());
+			auto s = flatbuffers::FlatBufferToString(
+			  reinterpret_cast<uint8_t*>(msg), FBS::Message::MessageTypeTable());
+			MS_DUMP("%s", s.c_str());
 #endif
 
-		if (message->data_type() == FBS::Message::Body::Request)
-		{
-			ChannelRequest* request;
-
-			try
-			{
-				request = new ChannelRequest(this, message->data_as<FBS::Request::Request>());
-
-				// Notify the listener.
-				this->listener->HandleRequest(request);
-			}
-			catch (const MediaSoupTypeError& error)
-			{
-				request->TypeError(error.what());
-			}
-			catch (const MediaSoupError& error)
-			{
-				request->Error(error.what());
-			}
-
-			delete request;
+			ProcessMessage(message);
 		}
-		else if (message->data_type() == FBS::Message::Body::Notification)
+		catch (const std::exception& error)
 		{
-			ChannelNotification* notification;
-
-			try
-			{
-				notification = new ChannelNotification(message->data_as<FBS::Notification::Notification>());
-
-				// Notify the listener.
-				this->listener->HandleNotification(notification);
-			}
-			catch (const MediaSoupError& error)
-			{
-				MS_ERROR("notification failed: %s", error.what());
-			}
-
-			delete notification;
+			MS_ERROR("channel socket message callback failed: %s", error.what());
+			FailClosed();
 		}
-		else
+		catch (...)
 		{
-			MS_ERROR("discarding wrong Channel data");
+			MS_ERROR("channel socket message callback failed with an unknown exception");
+			FailClosed();
 		}
 	}
 
@@ -325,7 +497,7 @@ namespace Channel
 	{
 		MS_TRACE_STD();
 
-		this->listener->OnChannelClosed(this);
+		FailClosed();
 	}
 
 	/* Instance methods. */

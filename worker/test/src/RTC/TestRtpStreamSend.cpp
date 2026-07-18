@@ -3,7 +3,10 @@
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpStream.hpp"
 #include "RTC/RtpStreamSend.hpp"
+#include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 // #define PERFORMANCE_TEST 1
@@ -43,6 +46,15 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 	class TestRtpStreamListener : public RtpStreamSend::Listener
 	{
 	public:
+		struct RetransmissionSnapshot
+		{
+			uint8_t payloadType{ 0u };
+			uint32_t ssrc{ 0u };
+			size_t size{ 0u };
+			std::vector<uint8_t> payload;
+		};
+
+	public:
 		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
 		{
 		}
@@ -50,14 +62,27 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 		void OnRtpStreamRetransmitRtpPacket(RtpStreamSend* /*rtpStream*/, RtpPacket* packet) override
 		{
 			this->retransmittedPackets.push_back(packet);
+			this->retransmissionSnapshots.push_back({
+			  packet->GetPayloadType(),
+			  packet->GetSsrc(),
+			  packet->GetSize(),
+			  std::vector<uint8_t>(
+			    packet->GetPayload(), packet->GetPayload() + packet->GetPayloadLength())
+			});
+			if (this->throwOnRetransmit)
+			{
+				throw std::runtime_error("injected retransmission failure");
+			}
 		}
 
 	public:
 		std::vector<RtpPacket*> retransmittedPackets;
+		std::vector<RetransmissionSnapshot> retransmissionSnapshots;
+		bool throwOnRetransmit{ false };
 	};
 
 	// clang-format off
-	uint8_t rtpBuffer1[] =
+	uint8_t rtpBuffer1[1500] =
 	{
 		0b10000000, 0b01111011, 0b01010010, 0b00001110,
 		0b01011011, 0b01101011, 0b11001010, 0b10110101,
@@ -137,7 +162,67 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 		CheckRtxPacket(rtxPacket4, packet4->GetSequenceNumber(), packet4->GetTimestamp());
 		CheckRtxPacket(rtxPacket5, packet5->GetSequenceNumber(), packet5->GetTimestamp());
 
+		delete packet1;
+		delete packet2;
+		delete packet3;
+		delete packet4;
+		delete packet5;
 		delete stream;
+	}
+
+	SECTION("RTX packet is restored when retransmission listener throws")
+	{
+		std::array<uint8_t, 64u> storage{};
+		const std::array<uint8_t, 14u> packetBytes{
+		  0x80u, 123u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+		  0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xaau, 0xbbu
+		};
+		std::copy(packetBytes.begin(), packetBytes.end(), storage.begin());
+		std::unique_ptr<RtpPacket> packet(
+		  RtpPacket::Parse(storage.data(), packetBytes.size(), storage.size()));
+		packet->SetSequenceNumber(22000u);
+		packet->SetTimestamp(1600000000u);
+
+		TestRtpStreamListener listener;
+		RtpStream::Params params;
+		params.ssrc          = 1111u;
+		params.payloadType   = 123u;
+		params.clockRate     = 90000u;
+		params.useNack       = true;
+		params.mimeType.type = RTC::RtpCodecMimeType::Type::VIDEO;
+		std::string mid;
+		RtpStreamSend stream(&listener, params, mid);
+		stream.SetRtx(124u, 2222u);
+		SendRtpPacket({ { &stream, params.ssrc } }, packet.get());
+
+		RTCP::FeedbackRtpNackPacket firstNack(0u, params.ssrc);
+		firstNack.AddItem(new RTCP::FeedbackRtpNackItem(22000u, 0u));
+		listener.throwOnRetransmit = true;
+		CHECK_THROWS_AS(stream.ReceiveNack(&firstNack), std::runtime_error);
+		REQUIRE(listener.retransmissionSnapshots.size() == 1u);
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(110));
+		RTCP::FeedbackRtpNackPacket secondNack(0u, params.ssrc);
+		secondNack.AddItem(new RTCP::FeedbackRtpNackItem(22000u, 0u));
+		listener.throwOnRetransmit = false;
+		CHECK_NOTHROW(stream.ReceiveNack(&secondNack));
+		REQUIRE(listener.retransmissionSnapshots.size() == 2u);
+
+		const auto& first = listener.retransmissionSnapshots[0];
+		const auto& second = listener.retransmissionSnapshots[1];
+		CHECK(first.payloadType == 124u);
+		CHECK(second.payloadType == 124u);
+		CHECK(first.ssrc == 2222u);
+		CHECK(second.ssrc == 2222u);
+		CHECK(first.size == packet->GetSize() + 2u);
+		CHECK(second.size == packet->GetSize() + 2u);
+		CHECK(first.payload == second.payload);
+		REQUIRE(second.payload.size() == packet->GetPayloadLength() + 2u);
+		CHECK(Utils::Byte::Get2Bytes(second.payload.data(), 0u) == 22000u);
+		CHECK(std::equal(
+		  packet->GetPayload(),
+		  packet->GetPayload() + packet->GetPayloadLength(),
+		  second.payload.begin() + 2));
 	}
 
 	SECTION("receive NACK and get zero retransmitted packets if useNack is not set")
@@ -190,6 +275,11 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 
 		testRtpStreamListener.retransmittedPackets.clear();
 
+		delete packet1;
+		delete packet2;
+		delete packet3;
+		delete packet4;
+		delete packet5;
 		delete stream;
 	}
 
@@ -243,6 +333,11 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 
 		testRtpStreamListener.retransmittedPackets.clear();
 
+		delete packet1;
+		delete packet2;
+		delete packet3;
+		delete packet4;
+		delete packet5;
 		delete stream;
 	}
 
@@ -315,6 +410,8 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 		CheckRtxPacket(rtxPacket1, packet1->GetSequenceNumber(), packet1->GetTimestamp());
 		CheckRtxPacket(rtxPacket2, packet2->GetSequenceNumber(), packet2->GetTimestamp());
 
+		delete packet1;
+		delete packet2;
 		delete stream1;
 		delete stream2;
 	}
@@ -368,6 +465,8 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 		CheckRtxPacket(rtxPacket1, packet1->GetSequenceNumber(), packet1->GetTimestamp());
 		CheckRtxPacket(rtxPacket2, packet2->GetSequenceNumber(), packet2->GetTimestamp());
 
+		delete packet1;
+		delete packet2;
 		delete stream;
 	}
 
@@ -423,6 +522,9 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 
 		CheckRtxPacket(rtxPacket2, packet2->GetSequenceNumber(), packet2->GetTimestamp());
 
+		delete packet1;
+		delete packet2;
+		delete packet3;
 		delete stream;
 	}
 
@@ -468,6 +570,10 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 
 		REQUIRE(testRtpStreamListener.retransmittedPackets.size() == 0);
 
+		delete packet1;
+		delete packet2;
+		delete packet3;
+		delete packet4;
 		delete stream;
 	}
 

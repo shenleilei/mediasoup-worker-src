@@ -5,9 +5,12 @@
 #include "DepLibUV.hpp"
 #include "Logger.hpp"
 #include "MediaSoupErrors.hpp"
+#include "Utils.hpp"
 #include "RTC/Codecs/Tools.hpp"
 #include "RTC/SimpleConsumer.hpp"
-#include "Utils.hpp"
+#include <cstring>
+#include <limits>
+#include <new>
 
 namespace RTC
 {
@@ -210,6 +213,77 @@ namespace RTC
 
 			return payload[0] & 0x1F;
 		}
+
+		bool HasExactExtensionProfile(
+		  const RTC::RtpPacket* packet,
+		  const std::vector<RTC::RtpPacket::GenericExtension>& extensions,
+		  const RTC::RtpHeaderExtensionIds& extensionIds)
+		{
+			if (packet->GetExtensionCount() != extensions.size())
+			{
+				return false;
+			}
+
+			// Equal id/length sets are not equivalent if same-sized URI values have
+			// exchanged ids (for example MID/ABS or MID/TWCC).
+			if (
+			  packet->GetMidExtensionId() != extensionIds.mid ||
+			  packet->GetAbsSendTimeExtensionId() != extensionIds.absSendTime ||
+			  packet->GetTransportWideCc01ExtensionId() != extensionIds.transportWideCc01)
+			{
+				return false;
+			}
+
+			for (const auto& extension : extensions)
+			{
+				uint8_t currentLength{ 0u };
+				if (!packet->GetExtension(extension.id, currentLength) || currentLength != extension.len)
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		bool IsCompatibleRetransmissionPacket(
+		  const RTC::RtpPacket* candidate,
+		  const RTC::RtpPacket* source,
+		  const std::vector<RTC::RtpPacket::GenericExtension>& extensions,
+		  const RTC::RtpHeaderExtensionIds& extensionIds)
+		{
+			if (!candidate || !HasExactExtensionProfile(candidate, extensions, extensionIds))
+			{
+				return false;
+			}
+
+			if (
+			  candidate->GetPayloadType() != source->GetPayloadType() ||
+			  candidate->HasMarker() != source->HasMarker() ||
+			  candidate->GetTimestamp() != source->GetTimestamp() ||
+			  candidate->GetPayloadLength() != source->GetPayloadLength() ||
+			  candidate->GetPayloadPadding() != source->GetPayloadPadding())
+			{
+				return false;
+			}
+
+			return candidate->GetPayloadLength() == 0u ||
+			       std::memcmp(
+			         candidate->GetPayload(), source->GetPayload(), source->GetPayloadLength()) == 0;
+		}
+
+		uint8_t SelectExtensionFormat(const std::vector<RTC::RtpPacket::GenericExtension>& extensions)
+		{
+			for (const auto& extension : extensions)
+			{
+				if (extension.id > 14u || extension.len > 16u)
+				{
+					return 2u;
+				}
+			}
+
+			return 1u;
+		}
 	} // namespace
 
 	/* Instance methods. */
@@ -228,6 +302,13 @@ namespace RTC
 		if (this->consumableRtpEncodings.size() != 1u)
 		{
 			MS_THROW_TYPE_ERROR("invalid consumableRtpEncodings with size != 1");
+		}
+		if (this->rtpParameters.mid.size() > std::numeric_limits<uint8_t>::max())
+		{
+			MS_THROW_TYPE_ERROR(
+			  "RTP MID exceeds encodable extension length [length:%zu, max:%" PRIu8 "]",
+			  this->rtpParameters.mid.size(),
+			  std::numeric_limits<uint8_t>::max());
 		}
 
 		auto& encoding         = this->rtpParameters.encodings[0];
@@ -499,9 +580,11 @@ namespace RTC
 		return desiredBitrate;
 	}
 
-	void SimpleConsumer::SendRtpPacket(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket)
+	void SimpleConsumer::SendRtpPacket(
+	  RTC::RtpPacket* packet, RTC::Consumer::RtpPacketFanoutContext& fanoutContext)
 	{
 		MS_TRACE();
+		RTC::Consumer::RtpPacketMutationGuard canonicalPacketGuard(packet, true);
 
 #ifdef MS_RTC_LOGGER_RTP
 		packet->logger.consumerId = this->id;
@@ -529,7 +612,8 @@ namespace RTC
 		{
 			MS_DEBUG_DEV("payload type not supported [payloadType:%" PRIu8 "]", payloadType);
 			MS_DEBUG_DEV(
-			  "simple consumer payload type not supported [consumerId:%s, producerId:%s, payloadType:%" PRIu8 "]",
+			  "simple consumer payload type not supported [consumerId:%s, producerId:%s, payloadType:%" PRIu8
+			  "]",
 			  this->id.c_str(),
 			  this->producerId.c_str(),
 			  payloadType);
@@ -541,9 +625,11 @@ namespace RTC
 			return;
 		}
 
-		bool marker;
+		// SimpleConsumer only creates an encoding context for Opus/MultiOpus. That
+		// handler can reject DTX but never mutates payload bytes, so perform the drop
+		// decision before any extension clone/allocation.
+		bool marker{ false };
 
-		// Process the payload if needed. Drop packet if necessary.
 		if (this->encodingContext && !packet->ProcessPayload(this->encodingContext.get(), marker))
 		{
 			MS_DEBUG_DEV(
@@ -568,13 +654,14 @@ namespace RTC
 			return;
 		}
 
-		// If we need to sync, support key frames and this is not a key frame, ignore
-		// the packet.
+		// Drop non-sync video before building any consumer-specific extension
+		// profile. Parameter packets intentionally pass through while waiting for
+		// the first keyframe.
 		if (this->syncRequired && this->keyFrameSupported && !packet->IsKeyFrame())
 		{
-			auto& encoding         = this->rtpParameters.encodings[0];
-			const auto* mediaCodec = this->rtpParameters.GetCodecForEncoding(encoding);
-			const auto* payload = packet->GetPayload();
+			auto& encoding           = this->rtpParameters.encodings[0];
+			const auto* mediaCodec   = this->rtpParameters.GetCodecForEncoding(encoding);
+			const auto* payload      = packet->GetPayload();
 			const auto payloadLength = packet->GetPayloadLength();
 			const bool allowSyncParameterPacket =
 			  mediaCodec && AllowsSyncParameterPacket(mediaCodec->mimeType, payload, payloadLength);
@@ -606,10 +693,156 @@ namespace RTC
 				  nalType,
 				  packet->IsKeyFrame() ? "true" : "false");
 #ifdef MS_RTC_LOGGER_RTP
-			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::NOT_A_KEYFRAME);
+				packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::NOT_A_KEYFRAME);
 #endif
 
-			return;
+				return;
+			}
+		}
+
+		// A SimpleConsumer can negotiate a different outbound extension layout than
+		// other Consumers fed by the same Router packet. Keep one immutable clone per
+		// compatible profile for this fanout, while preserving the ingress packet for
+		// later consumers and RTP observers.
+		std::shared_ptr<RTC::RtpPacket> outboundPacket;
+		thread_local static uint8_t extensionBuffer[512];
+		thread_local static std::vector<RTC::RtpPacket::GenericExtension> extensions;
+
+		if (extensions.capacity() != 16)
+		{
+			extensions.reserve(16);
+		}
+
+		extensions.clear();
+
+		uint8_t* extensionBufferPtr{ extensionBuffer };
+
+		// MID.
+		if (this->rtpHeaderExtensionIds.mid != 0u && !this->rtpParameters.mid.empty())
+		{
+			const auto extensionLength = static_cast<uint8_t>(this->rtpParameters.mid.size());
+			std::memcpy(extensionBufferPtr, this->rtpParameters.mid.data(), extensionLength);
+			extensions.emplace_back(this->rtpHeaderExtensionIds.mid, extensionLength, extensionBufferPtr);
+			extensionBufferPtr += extensionLength;
+		}
+
+		// abs-send-time.
+		if (this->rtpHeaderExtensionIds.absSendTime != 0u)
+		{
+			const uint8_t extensionLength = 3u;
+			Utils::Byte::Set3Bytes(extensionBufferPtr, 0, 0u);
+			extensions.emplace_back(
+			  this->rtpHeaderExtensionIds.absSendTime, extensionLength, extensionBufferPtr);
+			extensionBufferPtr += extensionLength;
+		}
+
+		// transport-wide-cc.
+		if (this->rtpHeaderExtensionIds.transportWideCc01 != 0u)
+		{
+			const uint8_t extensionLength = 2u;
+			Utils::Byte::Set2Bytes(extensionBufferPtr, 0, 0u);
+			extensions.emplace_back(
+			  this->rtpHeaderExtensionIds.transportWideCc01, extensionLength, extensionBufferPtr);
+		}
+
+		const bool requiresExtensionRewrite =
+		  !HasExactExtensionProfile(packet, extensions, this->rtpHeaderExtensionIds);
+
+		if (requiresExtensionRewrite)
+		{
+			for (const auto& candidate : fanoutContext.simpleConsumerProfiles)
+			{
+				if (IsCompatibleRetransmissionPacket(
+				      candidate.get(), packet, extensions, this->rtpHeaderExtensionIds))
+				{
+					outboundPacket = candidate;
+					break;
+				}
+			}
+
+			if (!outboundPacket)
+			{
+				outboundPacket.reset(packet->Clone());
+				auto* rewrittenPacket = outboundPacket.get();
+
+				if (!rewrittenPacket->SetExtensions(SelectExtensionFormat(extensions), extensions))
+				{
+					MS_WARN_TAG(
+					  rtp,
+					  "dropping RTP packet with insufficient extension capacity "
+					  "[consumerId:%s, producerId:%s, size:%zu]",
+					  this->id.c_str(),
+					  this->producerId.c_str(),
+					  rewrittenPacket->GetSize());
+					return;
+				}
+
+				rewrittenPacket->SetMidExtensionId(this->rtpHeaderExtensionIds.mid);
+				rewrittenPacket->SetAbsSendTimeExtensionId(this->rtpHeaderExtensionIds.absSendTime);
+				rewrittenPacket->SetTransportWideCc01ExtensionId(
+				  this->rtpHeaderExtensionIds.transportWideCc01);
+
+				// Caching is an optimization only. If the profile-index allocation fails,
+				// this consumer can still safely send and retain its owned packet.
+				try
+				{
+					fanoutContext.simpleConsumerProfiles.emplace_back(outboundPacket);
+				}
+				catch (const std::bad_alloc&)
+				{
+				}
+			}
+
+			packet = outboundPacket.get();
+
+			if (this->rtpHeaderExtensionIds.mid != 0u)
+			{
+				if (!packet->UpdateMid(this->rtpParameters.mid))
+				{
+					MS_WARN_TAG(
+					  rtp,
+					  "dropping RTP packet because MID cannot be rewritten [consumerId:%s]",
+					  this->id.c_str());
+					return;
+				}
+			}
+			if (this->rtpHeaderExtensionIds.absSendTime != 0u)
+			{
+				packet->UpdateAbsSendTime(0u);
+			}
+			if (this->rtpHeaderExtensionIds.transportWideCc01 != 0u)
+			{
+				packet->UpdateTransportWideCc01(0u);
+			}
+
+#ifdef MS_RTC_LOGGER_RTP
+			packet->logger.consumerId = this->id;
+#endif
+		}
+		else
+		{
+			// Keep the compatible shared profile canonical for every consumer. The
+			// Router restores these in-place values after the send, while the lazy
+			// retransmission clone retains the consumer MID and neutral transport
+			// timestamps for its own RtpStreamSend.
+			if (this->rtpHeaderExtensionIds.mid != 0u)
+			{
+				if (!packet->UpdateMid(this->rtpParameters.mid))
+				{
+					MS_WARN_TAG(
+					  rtp,
+					  "dropping RTP packet because MID cannot be rewritten [consumerId:%s]",
+					  this->id.c_str());
+					return;
+				}
+			}
+			if (this->rtpHeaderExtensionIds.absSendTime != 0u)
+			{
+				packet->UpdateAbsSendTime(0u);
+			}
+			if (this->rtpHeaderExtensionIds.transportWideCc01 != 0u)
+			{
+				packet->UpdateTransportWideCc01(0u);
 			}
 		}
 
@@ -636,63 +869,12 @@ namespace RTC
 		this->rtpSeqManager.Input(packet->GetSequenceNumber(), seq);
 
 		// Save original packet fields.
-		auto origSsrc = packet->GetSsrc();
-		auto origSeq  = packet->GetSequenceNumber();
+		auto origSeq = packet->GetSequenceNumber();
+		RTC::Consumer::RtpPacketMutationGuard outboundPacketGuard(packet);
 
 		// Rewrite packet.
 		packet->SetSsrc(this->rtpParameters.encodings[0].ssrc);
 		packet->SetSequenceNumber(seq);
-
-		// Rebuild outbound RTP header extensions using the consumer negotiated ids.
-		{
-			thread_local static uint8_t buffer[256];
-			thread_local static std::vector<RTC::RtpPacket::GenericExtension> extensions;
-
-			if (extensions.capacity() != 16)
-			{
-				extensions.reserve(16);
-			}
-
-			extensions.clear();
-
-			uint8_t* bufferPtr{ buffer };
-
-			// MID.
-			if (this->rtpHeaderExtensionIds.mid != 0u && !this->rtpParameters.mid.empty())
-			{
-				const auto extenLen = static_cast<uint8_t>(
-				  std::min<size_t>(this->rtpParameters.mid.size(), RTC::MidMaxLength));
-				std::memcpy(bufferPtr, this->rtpParameters.mid.data(), extenLen);
-				extensions.emplace_back(this->rtpHeaderExtensionIds.mid, extenLen, bufferPtr);
-				bufferPtr += extenLen;
-			}
-
-			// abs-send-time.
-			if (this->rtpHeaderExtensionIds.absSendTime != 0u)
-			{
-				const uint8_t extenLen = 3u;
-				Utils::Byte::Set3Bytes(bufferPtr, 0, 0u);
-				extensions.emplace_back(this->rtpHeaderExtensionIds.absSendTime, extenLen, bufferPtr);
-				bufferPtr += extenLen;
-			}
-
-			// transport-wide-cc.
-			if (this->rtpHeaderExtensionIds.transportWideCc01 != 0u)
-			{
-				const uint8_t extenLen = 2u;
-				Utils::Byte::Set2Bytes(bufferPtr, 0, 0u);
-				extensions.emplace_back(this->rtpHeaderExtensionIds.transportWideCc01, extenLen, bufferPtr);
-				bufferPtr += extenLen;
-			}
-
-			if (!extensions.empty())
-			{
-				packet->SetExtensions(1u, extensions);
-				packet->SetMidExtensionId(this->rtpHeaderExtensionIds.mid);
-				packet->SetAbsSendTimeExtensionId(this->rtpHeaderExtensionIds.absSendTime);
-				packet->SetTransportWideCc01ExtensionId(this->rtpHeaderExtensionIds.transportWideCc01);
-			}
-		}
 
 #ifdef MS_RTC_LOGGER_RTP
 		packet->logger.sendRtpTimestamp = packet->GetTimestamp();
@@ -711,8 +893,21 @@ namespace RTC
 			  origSeq);
 		}
 
-		// Process the packet.
-		if (this->rtpStream->ReceivePacket(packet, sharedPacket))
+		// Process the packet. The default lazy clone may have been produced by a
+		// payload-rewriting SVC/Simulcast consumer earlier in this fanout. Never let
+		// SimpleConsumer retain it unless both the extension profile and immutable
+		// payload match the packet sent here.
+		auto& retransmissionPacket = outboundPacket ? outboundPacket : fanoutContext.sharedPacket;
+
+		if (
+		  !outboundPacket && retransmissionPacket &&
+		  !IsCompatibleRetransmissionPacket(
+		    retransmissionPacket.get(), packet, extensions, this->rtpHeaderExtensionIds))
+		{
+			retransmissionPacket.reset();
+		}
+
+		if (this->rtpStream->ReceivePacket(packet, retransmissionPacket))
 		{
 			MS_DEBUG_DEV(
 			  "simple consumer sending RTP [consumerId:%s, producerId:%s, seq:%" PRIu16 ", ts:%" PRIu32
@@ -741,9 +936,6 @@ namespace RTC
 			  origSeq);
 		}
 
-		// Restore packet fields.
-		packet->SetSsrc(origSsrc);
-		packet->SetSequenceNumber(origSeq);
 	}
 
 	bool SimpleConsumer::GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs)

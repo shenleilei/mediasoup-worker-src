@@ -78,8 +78,12 @@ public:
 	uint32_t GetRecvBufferSize() const;
 	void SetRecvBufferSize(uint32_t size);
 
+#ifdef MS_TEST
+	static void FailNextFilenoForTesting();
+#endif
+
 private:
-	void InternalClose();
+	void InternalClose() noexcept;
 	bool SetLocalAddress();
 
 	/* Callbacks fired by UV events. */

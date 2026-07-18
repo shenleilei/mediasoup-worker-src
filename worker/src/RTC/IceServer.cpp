@@ -4,9 +4,62 @@
 #include "RTC/IceServer.hpp"
 #include "DepLibUV.hpp"
 #include "Logger.hpp"
+#include <exception>
 
 namespace RTC
 {
+	namespace
+	{
+		class RemovingTuplesGuard
+		{
+		public:
+			explicit RemovingTuplesGuard(bool& flag) : flag(flag)
+			{
+				this->flag = true;
+			}
+
+			~RemovingTuplesGuard()
+			{
+				this->flag = false;
+			}
+
+			RemovingTuplesGuard(const RemovingTuplesGuard&)            = delete;
+			RemovingTuplesGuard& operator=(const RemovingTuplesGuard&) = delete;
+
+		private:
+			bool& flag;
+		};
+
+		template<typename Callback>
+		void InvokeIceListenerNoThrow(const char* context, Callback&& callback) noexcept
+		{
+			try
+			{
+				callback();
+			}
+			catch (const std::exception& error)
+			{
+				try
+				{
+					MS_ERROR("%s failed: %s", context, error.what());
+				}
+				catch (...)
+				{
+				}
+			}
+			catch (...)
+			{
+				try
+				{
+					MS_ERROR("%s failed with an unknown exception", context);
+				}
+				catch (...)
+				{
+				}
+			}
+		}
+	} // namespace
+
 	/* Static. */
 
 	static constexpr size_t StunSerializeBufferSize{ 65536 };
@@ -108,32 +161,49 @@ namespace RTC
 		this->listener->OnIceServerLocalUsernameFragmentAdded(this, usernameFragment);
 	}
 
-	IceServer::~IceServer()
+	IceServer::~IceServer() noexcept
 	{
-		MS_TRACE();
+		try
+		{
+			MS_TRACE();
+		}
+		catch (...)
+		{
+		}
 
 		// Here we must notify the listener about the removal of current
 		// usernameFragments (and also the old one if any) and all tuples.
 
-		this->listener->OnIceServerLocalUsernameFragmentRemoved(this, usernameFragment);
+		InvokeIceListenerNoThrow(
+		  "ICE local username removal listener",
+		  [this]() { this->listener->OnIceServerLocalUsernameFragmentRemoved(this, usernameFragment); });
 
 		if (!this->oldUsernameFragment.empty())
 		{
-			this->listener->OnIceServerLocalUsernameFragmentRemoved(this, this->oldUsernameFragment);
+			InvokeIceListenerNoThrow(
+			  "ICE old local username removal listener",
+			  [this]()
+			  {
+				  this->listener->OnIceServerLocalUsernameFragmentRemoved(
+				    this, this->oldUsernameFragment);
+			  });
 		}
 
 		// Clear all tuples.
-		this->isRemovingTuples = true;
-
-		for (const auto& it : this->tuples)
 		{
-			auto* storedTuple = const_cast<RTC::TransportTuple*>(std::addressof(it));
+			RemovingTuplesGuard removingTuplesGuard(this->isRemovingTuples);
 
-			// Notify the listener.
-			this->listener->OnIceServerTupleRemoved(this, storedTuple);
+			for (const auto& it : this->tuples)
+			{
+				auto* storedTuple = const_cast<RTC::TransportTuple*>(std::addressof(it));
+
+				// Notify each listener independently so one failure cannot skip the
+				// remaining tuples or timer cleanup during this noexcept destructor.
+				InvokeIceListenerNoThrow(
+				  "ICE tuple removal listener",
+				  [this, storedTuple]() { this->listener->OnIceServerTupleRemoved(this, storedTuple); });
+			}
 		}
-
-		this->isRemovingTuples = false;
 
 		// Clear all tuples.
 		// NOTE: Do it after notifying the listener since the listener may need to
@@ -147,6 +217,26 @@ namespace RTC
 		delete this->consentCheckTimer;
 		this->consentCheckTimer = nullptr;
 	}
+
+#ifdef MS_TEST
+	void IceServer::StartConsentTimeoutForTesting(RTC::TransportTuple* tuple, uint64_t timeoutMs)
+	{
+		auto* storedTuple = AddTuple(tuple);
+		this->selectedTuple = storedTuple;
+		this->state         = IceState::CONNECTED;
+
+		if (!this->consentCheckTimer)
+		{
+			this->consentCheckTimer = new TimerHandle(this);
+		}
+		else if (this->consentCheckTimer->IsActive())
+		{
+			this->consentCheckTimer->Stop();
+		}
+
+		this->consentCheckTimer->Start(timeoutMs);
+	}
+#endif
 
 	void IceServer::ProcessStunPacket(RTC::StunPacket* packet, RTC::TransportTuple* tuple)
 	{
@@ -258,10 +348,39 @@ namespace RTC
 			return;
 		}
 
-		// Notify the listener.
-		this->isRemovingTuples = true;
-		this->listener->OnIceServerTupleRemoved(this, removedTuple);
-		this->isRemovingTuples = false;
+		const bool removedSelectedTuple = removedTuple == this->selectedTuple;
+
+		// Notify the listener while suppressing re-entrant removals. Listener
+		// failure must neither leave the guard latched nor cancel terminal tuple
+		// cleanup, otherwise a closing TCP connection remains referenced forever.
+		{
+			RemovingTuplesGuard removingTuplesGuard(this->isRemovingTuples);
+
+			try
+			{
+				this->listener->OnIceServerTupleRemoved(this, removedTuple);
+			}
+			catch (const std::exception& error)
+			{
+				try
+				{
+					MS_ERROR("ICE tuple removal listener failed: %s", error.what());
+				}
+				catch (...)
+				{
+				}
+			}
+			catch (...)
+			{
+				try
+				{
+					MS_ERROR("ICE tuple removal listener failed with an unknown exception");
+				}
+				catch (...)
+				{
+				}
+			}
+		}
 
 		// Remove it from the list of tuples.
 		// NOTE: Do it after notifying the listener since the listener may need to
@@ -269,7 +388,7 @@ namespace RTC
 		this->tuples.erase(it);
 
 		// If this is the selected tuple, do things.
-		if (removedTuple == this->selectedTuple)
+		if (removedSelectedTuple)
 		{
 			this->selectedTuple = nullptr;
 
@@ -291,10 +410,15 @@ namespace RTC
 			// Or just emit 'disconnected'.
 			else
 			{
-				MS_WARN_TAG(
-				  ice,
-				  "transition from state '%s' to 'disconnected' [reason:selected tuple removed]",
-				  this->state == IceState::CONNECTED ? "connected" : "completed");
+				InvokeIceListenerNoThrow(
+				  "ICE disconnected transition log",
+				  [this]()
+				  {
+					  MS_WARN_TAG(
+					    ice,
+					    "transition from state '%s' to 'disconnected' [reason:selected tuple removed]",
+					    this->state == IceState::CONNECTED ? "connected" : "completed");
+				  });
 
 				// Update state.
 				this->state = IceState::DISCONNECTED;
@@ -302,13 +426,17 @@ namespace RTC
 				// Reset remote nomination.
 				this->remoteNomination = 0u;
 
-				// Notify the listener.
-				this->listener->OnIceServerDisconnected(this);
-
+				// Stop terminal timer activity before notifying user code. If the
+				// notification allocates and fails, no later timer callback can observe
+				// DISCONNECTED with a null selected tuple and abort on its invariants.
 				if (IsConsentCheckSupported() && IsConsentCheckRunning())
 				{
 					StopConsentCheck();
 				}
+
+				InvokeIceListenerNoThrow(
+				  "ICE disconnected listener",
+				  [this]() { this->listener->OnIceServerDisconnected(this); });
 			}
 		}
 	}
@@ -819,10 +947,16 @@ namespace RTC
 			// This should not happen by design.
 			MS_ASSERT(removedTuple, "couldn't find any tuple to be removed");
 
-			// Notify the listener.
-			this->isRemovingTuples = true;
-			this->listener->OnIceServerTupleRemoved(this, removedTuple);
-			this->isRemovingTuples = false;
+			// Notify the listener while keeping re-entrant removals suppressed. A
+			// listener failure must not leave the flag latched or skip the bounded
+			// eviction below.
+			{
+				RemovingTuplesGuard removingTuplesGuard(this->isRemovingTuples);
+				InvokeIceListenerNoThrow(
+				  "ICE tuple eviction listener",
+				  [this, removedTuple]()
+				  { this->listener->OnIceServerTupleRemoved(this, removedTuple); });
+			}
 
 			// Remove it from the list of tuples.
 			// NOTE: Do it after notifying the listener since the listener may need to
@@ -873,7 +1007,9 @@ namespace RTC
 		this->selectedTuple = storedTuple;
 
 		// Notify the listener.
-		this->listener->OnIceServerSelectedTuple(this, this->selectedTuple);
+		InvokeIceListenerNoThrow(
+		  "ICE selected tuple listener",
+		  [this]() { this->listener->OnIceServerSelectedTuple(this, this->selectedTuple); });
 	}
 
 	void IceServer::StartConsentCheck()
@@ -914,9 +1050,15 @@ namespace RTC
 		this->consentCheckTimer->Stop();
 	}
 
-	inline void IceServer::OnTimer(TimerHandle* timer)
+	inline void IceServer::OnTimer(TimerHandle* timer) noexcept
 	{
-		MS_TRACE();
+		try
+		{
+			MS_TRACE();
+		}
+		catch (...)
+		{
+		}
 
 		if (timer == this->consentCheckTimer)
 		{
@@ -930,7 +1072,19 @@ namespace RTC
 			// There should be a selected tuple.
 			MS_ASSERT(this->selectedTuple, "ICE consent check timer fired but there is not selected tuple");
 
-			MS_WARN_TAG(ice, "ICE consent expired due to timeout, moving to 'disconnected' state");
+			InvokeIceListenerNoThrow(
+			  "ICE consent expiration log",
+			  []()
+			  { MS_WARN_TAG(ice, "ICE consent expired due to timeout, moving to 'disconnected' state"); });
+
+			// A test hook can invoke this method while the timer is still active;
+			// real one-shot libuv timers are normally inactive before the callback.
+			// In either case, commit terminal timer cleanup before notifications.
+			if (IsConsentCheckRunning())
+			{
+				InvokeIceListenerNoThrow(
+				  "ICE consent timer stop", [this]() { this->consentCheckTimer->Stop(); });
+			}
 
 			// Update state.
 			this->state = IceState::DISCONNECTED;
@@ -938,18 +1092,19 @@ namespace RTC
 			// Reset remote nomination.
 			this->remoteNomination = 0u;
 
-			// Clear all tuples.
-			this->isRemovingTuples = true;
-
-			for (const auto& it : this->tuples)
 			{
-				auto* storedTuple = const_cast<RTC::TransportTuple*>(std::addressof(it));
+				RemovingTuplesGuard removingTuplesGuard(this->isRemovingTuples);
 
-				// Notify the listener.
-				this->listener->OnIceServerTupleRemoved(this, storedTuple);
+				for (const auto& it : this->tuples)
+				{
+					auto* storedTuple = const_cast<RTC::TransportTuple*>(std::addressof(it));
+
+					InvokeIceListenerNoThrow(
+					  "ICE consent-expiry tuple removal listener",
+					  [this, storedTuple]()
+					  { this->listener->OnIceServerTupleRemoved(this, storedTuple); });
+				}
 			}
-
-			this->isRemovingTuples = false;
 
 			// Clear all tuples.
 			// NOTE: Do it after notifying the listener since the listener may need to
@@ -959,8 +1114,9 @@ namespace RTC
 			// Unset selected tuple.
 			this->selectedTuple = nullptr;
 
-			// Notify the listener.
-			this->listener->OnIceServerDisconnected(this);
+			InvokeIceListenerNoThrow(
+			  "ICE consent-expiry disconnected listener",
+			  [this]() { this->listener->OnIceServerDisconnected(this); });
 		}
 	}
 } // namespace RTC

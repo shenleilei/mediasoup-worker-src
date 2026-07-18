@@ -3,6 +3,7 @@
 
 #include "common.hpp"
 #include <uv.h>
+#include <memory>
 #include <string>
 
 class TcpConnectionHandle
@@ -70,8 +71,19 @@ public:
 	  size_t len1,
 	  const uint8_t* data2,
 	  size_t len2,
-	  TcpConnectionHandle::onSendCallback* cb);
-	void ErrorReceiving();
+	  TcpConnectionHandle::onSendCallback* cb) noexcept;
+	void ErrorReceiving() noexcept;
+	// Internal libuv callback lifetime boundary. A close requested while a
+	// callback is active is published only after the callback has unwound.
+	void BeginUvCallback() noexcept;
+	Listener* EndUvCallback() noexcept;
+#ifdef MS_TEST
+	static void FailNextSetupAfterUvInitForTesting();
+	static void FailNextStartAfterReadStartForTesting();
+	static void FailNextWriteDataAllocationForTesting();
+	static void FailNextShutdownAllocationForTesting();
+	static size_t GetTcpCloseCountForTesting();
+#endif
 	const struct sockaddr* GetLocalAddress() const
 	{
 		return reinterpret_cast<const struct sockaddr*>(this->localAddr);
@@ -110,14 +122,20 @@ public:
 	}
 
 private:
-	void InternalClose();
+	void InternalClose() noexcept;
+	void NotifyClosed() noexcept;
+	void HandleWriteFailure(onSendCallback* cb) noexcept;
+	Listener* InvokeSendCallbackNoThrow(onSendCallback* cb, bool sent) noexcept;
 	bool SetPeerAddress();
 
 	/* Callbacks fired by UV events. */
 public:
-	void OnUvReadAlloc(size_t suggestedSize, uv_buf_t* buf);
-	void OnUvRead(ssize_t nread, const uv_buf_t* buf);
-	void OnUvWrite(int status, onSendCallback* cb);
+	void OnUvReadAlloc(size_t suggestedSize, uv_buf_t* buf) noexcept;
+	void OnUvRead(ssize_t nread, const uv_buf_t* buf) noexcept;
+	void OnUvWrite(int status, onSendCallback* cb) noexcept;
+#ifdef MS_LIBURING_SUPPORTED
+	void OnLibUringWrite(bool sent, size_t len, onSendCallback* cb) noexcept;
+#endif
 
 	/* Pure virtual methods that must be implemented by the subclass. */
 protected:
@@ -145,15 +163,21 @@ private:
 	uv_tcp_t* uvHandle{ nullptr };
 	// Others.
 	struct sockaddr_storage* localAddr{ nullptr };
+	bool uvHandleInitialized{ false };
 #ifdef MS_LIBURING_SUPPORTED
 	// Local file descriptor for io_uring.
 	uv_os_fd_t fd{ 0u };
+	// Guards callbacks that may outlive this connection handle.
+	std::shared_ptr<uint8_t> liburingLifetimeToken{ std::make_shared<uint8_t>(0u) };
 #endif
 	bool closed{ false };
 	size_t recvBytes{ 0u };
 	size_t sentBytes{ 0u };
 	bool isClosedByPeer{ false };
 	bool hasError{ false };
+	size_t uvCallbackDepth{ 0u };
+	bool closeNotificationPending{ false };
+	bool closeNotificationSent{ false };
 };
 
 #endif

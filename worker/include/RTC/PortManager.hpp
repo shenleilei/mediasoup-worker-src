@@ -32,6 +32,13 @@ namespace RTC
 			uint16_t numUsedPorts{ 0u };
 		};
 
+		struct PendingRangeBinding
+		{
+			bool active{ false };
+			uint64_t hash{ 0u };
+			uint16_t port{ 0u };
+		};
+
 	public:
 		static uv_udp_t* BindUdp(std::string& ip, uint16_t port, RTC::Transport::SocketFlags& flags)
 		{
@@ -60,6 +67,8 @@ namespace RTC
 			return reinterpret_cast<uv_tcp_t*>(Bind(Protocol::TCP, ip, minPort, maxPort, flags, hash));
 		}
 		static void Unbind(uint64_t hash, uint16_t port);
+		static void CommitPendingRangeBinding(uint64_t hash) noexcept;
+		static void RollbackPendingRangeBinding() noexcept;
 		static void Dump();
 
 	private:
@@ -79,6 +88,7 @@ namespace RTC
 
 	private:
 		thread_local static absl::flat_hash_map<uint64_t, PortRange> mapPortRanges;
+		thread_local static PendingRangeBinding pendingRangeBinding;
 	};
 } // namespace RTC
 

@@ -278,11 +278,25 @@ if host_machine.system() == 'windows'
   ]
 endif
 
-if host_machine.system() == 'linux' and not get_option('ms_disable_liburing')
+liburing_requested = get_option('ms_enable_liburing') or get_option('ms_force_liburing')
+
+if get_option('ms_disable_liburing') and liburing_requested
+  error('ms_disable_liburing conflicts with an explicit liburing enable request')
+endif
+
+if liburing_requested and host_machine.system() != 'linux'
+  error('liburing integration can only be enabled on Linux')
+endif
+
+if host_machine.system() == 'linux' and liburing_requested
   kernel_version = run_command('uname', '-r', check: true).stdout().strip()
 
-  # Enable liburing for kernel versions greather than or equal to 6.
-  if kernel_version[0].to_int() >= 6
+  kernel_major_version = kernel_version.split('.')[0].to_int()
+
+  # Production use is explicit opt-in and requires a Linux 6+ build host.
+  # ms_force_liburing exists solely so CI can compile the guarded path on
+  # older kernels; runtime support checks still decide whether it activates.
+  if kernel_major_version >= 6 or get_option('ms_force_liburing')
     liburing_proj = subproject('liburing', default_options: ['default_library=static'], required: true)
 
     dependencies += [
@@ -297,6 +311,8 @@ if host_machine.system() == 'linux' and not get_option('ms_disable_liburing')
     cpp_args += [
       '-DMS_LIBURING_SUPPORTED',
     ]
+  else
+    error('ms_enable_liburing requires a Linux 6+ build host; use ms_force_liburing only for CI validation')
   endif
 endif
 
@@ -326,6 +342,11 @@ executable(
 
 test_sources = [
   'test/src/tests.cpp',
+  'test/src/Channel/TestChannelSocket.cpp',
+  'test/src/handles/TestTcpServerHandle.cpp',
+  'test/src/TestDepLibUring.cpp',
+  'test/src/TestWorkerFeatures.cpp',
+  'test/src/RTC/TestIceServer.cpp',
   'test/src/RTC/TestKeyFrameRequestManager.cpp',
   'test/src/RTC/TestNackGenerator.cpp',
   'test/src/RTC/TestRateCalculator.cpp',
@@ -338,8 +359,12 @@ test_sources = [
   'test/src/RTC/TestSeqManager.cpp',
   'test/src/RTC/TestTrendCalculator.cpp',
   'test/src/RTC/TestRtpEncodingParameters.cpp',
+  'test/src/RTC/TestProducer.cpp',
+  'test/src/RTC/TestRtpProbationGenerator.cpp',
   'test/src/RTC/TestSimpleConsumer.cpp',
+	'test/src/RTC/TestSrtpSession.cpp',
   'test/src/RTC/TestTransportCongestionControlServer.cpp',
+  'test/src/RTC/TestWebRtcServer.cpp',
   'test/src/RTC/Codecs/TestVP8.cpp',
   'test/src/RTC/Codecs/TestVP9.cpp',
   'test/src/RTC/Codecs/TestH264.cpp',
@@ -398,6 +423,14 @@ test(
   workdir: meson.project_source_root(),
 )
 
+python3 = find_program('python3')
+test(
+  'worker-tasks-policy',
+  python3,
+  args: ['test/test_tasks.py'],
+  workdir: meson.project_source_root(),
+)
+
 mediasoup_worker_test_asan = executable(
   'mediasoup-worker-test-asan',
   build_by_default: false,
@@ -424,6 +457,35 @@ mediasoup_worker_test_asan = executable(
 test(
   'mediasoup-worker-test-asan',
   mediasoup_worker_test_asan,
+  workdir: meson.project_source_root(),
+)
+
+mediasoup_worker_test_ubsan = executable(
+  'mediasoup-worker-test-ubsan',
+  build_by_default: false,
+  install: true,
+  install_tag: 'mediasoup-worker-test-ubsan',
+  dependencies: dependencies + [
+    catch2_proj.get_variable('catch2_dep'),
+  ],
+  sources: common_sources + [flatbuffers_generator] + test_sources,
+  include_directories: include_directories(
+    'include',
+    'test/include',
+  ),
+  cpp_args: cpp_args + [
+    '-DMS_LOG_STD',
+    '-DMS_TEST',
+    '-fsanitize=undefined',
+  ],
+  link_args: [
+    '-fsanitize=undefined',
+  ],
+)
+
+test(
+  'mediasoup-worker-test-ubsan',
+  mediasoup_worker_test_ubsan,
   workdir: meson.project_source_root(),
 )
 

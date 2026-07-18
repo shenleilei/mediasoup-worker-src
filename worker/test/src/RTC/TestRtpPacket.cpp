@@ -1,8 +1,11 @@
 #include "common.hpp"
 #include "helpers.hpp"
 #include "RTC/RtpPacket.hpp"
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstring> // std::memset()
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -211,7 +214,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 	SECTION("create RtpPacket with One-Byte header extension")
 	{
 		// clang-format off
-		uint8_t buffer[] =
+		uint8_t buffer[1032] =
 		{
 			0x90, 0x01, 0x00, 0x08,
 			0x00, 0x00, 0x00, 0x04,
@@ -223,7 +226,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		};
 		// clang-format on
 
-		RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+		RtpPacket* packet = RtpPacket::Parse(buffer, 28u, sizeof(buffer));
 
 		if (!packet)
 		{
@@ -243,7 +246,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(packet->GetPayloadLength() == 0);
 		REQUIRE(packet->GetSize() == 28);
 
-		packet->SetPayloadLength(1000);
+		REQUIRE(packet->SetPayloadLength(1000));
 
 		REQUIRE(packet->GetPayloadLength() == 1000);
 		REQUIRE(packet->GetSize() == 1028);
@@ -289,10 +292,10 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(packet->HasExtension(4) == true);
 		REQUIRE(extenLen == 8);
 		REQUIRE(extenValue);
-		REQUIRE(packet->ReadAbsCaptureTime(
-		  absoluteCaptureTimestamp,
-		  hasEstimatedCaptureClockOffset2,
-		  estimatedCaptureClockOffset2) == true);
+		REQUIRE(
+		  packet->ReadAbsCaptureTime(
+		    absoluteCaptureTimestamp, hasEstimatedCaptureClockOffset2, estimatedCaptureClockOffset2) ==
+		  true);
 		REQUIRE(absoluteCaptureTimestamp == 0x0102030405060708ULL);
 		REQUIRE(hasEstimatedCaptureClockOffset2 == false);
 		REQUIRE(estimatedCaptureClockOffset2 == 0);
@@ -331,10 +334,10 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(packet->HasTwoBytesExtensions() == true);
 
 		packet->SetAbsCaptureTimeExtensionId(13);
-		REQUIRE(packet->ReadAbsCaptureTime(
-		  absoluteCaptureTimestamp,
-		  hasEstimatedCaptureClockOffset2,
-		  estimatedCaptureClockOffset2) == true);
+		REQUIRE(
+		  packet->ReadAbsCaptureTime(
+		    absoluteCaptureTimestamp, hasEstimatedCaptureClockOffset2, estimatedCaptureClockOffset2) ==
+		  true);
 		REQUIRE(absoluteCaptureTimestamp == 0x0102030405060708ULL);
 		REQUIRE(hasEstimatedCaptureClockOffset2 == true);
 		REQUIRE(static_cast<uint64_t>(estimatedCaptureClockOffset2) == 0xfffefdfcfbfaf9f8ULL);
@@ -454,7 +457,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 
 		std::memset(buffer, '0', sizeof(buffer));
 
-		rtxPacket->RtxEncode(rtxPayloadType, rtxSsrc, rtxSeq);
+		REQUIRE(rtxPacket->RtxEncode(rtxPayloadType, rtxSsrc, rtxSeq));
 
 		REQUIRE(rtxPacket->HasMarker() == false);
 		REQUIRE(rtxPacket->HasHeaderExtension() == true);
@@ -486,7 +489,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 	SECTION("create RtpPacket and apply payload shift to it")
 	{
 		// clang-format off
-		uint8_t buffer[] =
+		uint8_t buffer[1040] =
 		{
 			0xb0, 0x01, 0x00, 0x08,
 			0x00, 0x00, 0x00, 0x04,
@@ -506,7 +509,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		// clang-format on
 
 		size_t len        = 40;
-		RtpPacket* packet = RtpPacket::Parse(buffer, len);
+		RtpPacket* packet = RtpPacket::Parse(buffer, len, sizeof(buffer));
 
 		if (!packet)
 		{
@@ -540,7 +543,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(payload[7] == 0x07);
 
 		// NOTE: This will remove padding.
-		packet->ShiftPayload(0, 2, true);
+		REQUIRE(packet->ShiftPayload(0, 2, true));
 
 		REQUIRE(packet->GetPayloadLength() == 10);
 		REQUIRE(packet->GetPayloadPadding() == 0);
@@ -554,7 +557,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(payload[8] == 0x06);
 		REQUIRE(payload[9] == 0x07);
 
-		packet->ShiftPayload(0, 2, false);
+		REQUIRE(packet->ShiftPayload(0, 2, false));
 
 		REQUIRE(packet->GetPayloadLength() == 8);
 		REQUIRE(packet->GetPayloadPadding() == 0);
@@ -569,13 +572,13 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(payload[7] == 0x07);
 
 		// NOTE: This will remove padding.
-		packet->SetPayloadLength(14);
+		REQUIRE(packet->SetPayloadLength(14));
 
 		REQUIRE(packet->GetPayloadLength() == 14);
 		REQUIRE(packet->GetPayloadPadding() == 0);
 		REQUIRE(packet->GetSize() == 42);
 
-		packet->ShiftPayload(4, 4, true);
+		REQUIRE(packet->ShiftPayload(4, 4, true));
 
 		REQUIRE(packet->GetPayloadLength() == 18);
 		REQUIRE(packet->GetPayloadPadding() == 0);
@@ -589,7 +592,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		REQUIRE(payload[10] == 0x06);
 		REQUIRE(payload[11] == 0x07);
 
-		packet->SetPayloadLength(1000);
+		REQUIRE(packet->SetPayloadLength(1000));
 
 		REQUIRE(packet->GetPayloadLength() == 1000);
 		REQUIRE(packet->GetPayloadPadding() == 0);
@@ -616,10 +619,11 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 			0x00, 0x00, 0x00, 0x00,
 			0x00, 0x00, 0x00, 0x00,
 			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
 		};
 		// clang-format on
 
-		RtpPacket* packet = RtpPacket::Parse(buffer, 28);
+		RtpPacket* packet = RtpPacket::Parse(buffer, 28, sizeof(buffer));
 		std::vector<RTC::RtpPacket::GenericExtension> extensions;
 		uint8_t extenLen;
 		uint8_t* extenValue;
@@ -792,7 +796,7 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		};
 		// clang-format on
 
-		RtpPacket* packet = RtpPacket::Parse(buffer, 28);
+		RtpPacket* packet = RtpPacket::Parse(buffer, 28, sizeof(buffer));
 		std::vector<RTC::RtpPacket::GenericExtension> extensions;
 		uint8_t extenLen;
 		uint8_t* extenValue;
@@ -974,4 +978,265 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 
 		delete packet;
 	}
+}
+
+TEST_CASE("RTP extension growth is fail-closed and state preserving", "[rtp][capacity]")
+{
+	for (size_t iteration = 0; iteration < 256; ++iteration)
+	{
+		std::array<uint8_t, 64> storage{};
+		storage[0]  = 0x81; // RTP version 2 with one CSRC (keeps IsRtp's mux guard happy).
+		storage[1]  = 96;
+		storage[2]  = static_cast<uint8_t>(iteration);
+		storage[3]  = static_cast<uint8_t>(iteration >> 8);
+		storage[11] = 1;
+		for (size_t i = 12; i < 20; ++i)
+		{
+			storage[i] = static_cast<uint8_t>(i + iteration);
+		}
+
+		const size_t packetLength     = 20;
+		const size_t capacity         = packetLength + (iteration % 33);
+		const uint8_t extensionLength = static_cast<uint8_t>((iteration % 16) + 1);
+		std::array<uint8_t, 16> extensionValue{};
+		for (size_t i = 0; i < extensionValue.size(); ++i)
+		{
+			extensionValue[i] = static_cast<uint8_t>(i ^ iteration);
+		}
+		std::vector<RtpPacket::GenericExtension> extensions{ RtpPacket::GenericExtension(
+			static_cast<uint8_t>((iteration % 14) + 1), extensionLength, extensionValue.data()) };
+
+		const auto before = storage;
+		RtpPacket* packet = RtpPacket::Parse(storage.data(), packetLength, capacity);
+		REQUIRE(packet != nullptr);
+		const bool changed                  = packet->SetExtensions(1, extensions);
+		const size_t expectedExtensionBytes = ((1u + extensionLength + 3u) / 4u) * 4u + 4u;
+		if (capacity < packetLength + expectedExtensionBytes)
+		{
+			REQUIRE_FALSE(changed);
+			REQUIRE(storage == before);
+			REQUIRE(packet->GetSize() == packetLength);
+			REQUIRE_FALSE(packet->HasHeaderExtension());
+		}
+		else
+		{
+			REQUIRE(changed);
+			REQUIRE(packet->GetSize() <= capacity);
+			REQUIRE(packet->HasHeaderExtension());
+		}
+		delete packet;
+	}
+
+	std::array<uint8_t, 32> storage{};
+	storage[0]        = 0x81;
+	storage[1]        = 96;
+	RtpPacket* packet = RtpPacket::Parse(storage.data(), 20, storage.size());
+	REQUIRE(packet != nullptr);
+	const auto before = storage;
+	std::vector<RtpPacket::GenericExtension> invalid{ RtpPacket::GenericExtension(1, 4, nullptr) };
+	REQUIRE_FALSE(packet->SetExtensions(1, invalid));
+	REQUIRE(storage == before);
+	delete packet;
+}
+
+TEST_CASE("SetExtensions clears stale abs-capture-time metadata", "[rtp][extensions]")
+{
+	std::array<uint8_t, 64u> storage{};
+	storage[0]  = 0x80u;
+	storage[1]  = 96u;
+	storage[11] = 1u;
+	std::unique_ptr<RtpPacket> packet(
+	  RtpPacket::Parse(storage.data(), RtpPacket::HeaderSize, storage.size()));
+	REQUIRE(packet);
+
+	std::array<uint8_t, 8u> absCaptureTime{ 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u };
+	std::vector<RtpPacket::GenericExtension> initial{ RtpPacket::GenericExtension(
+		6u, static_cast<uint8_t>(absCaptureTime.size()), absCaptureTime.data()) };
+	REQUIRE(packet->SetExtensions(1u, initial));
+	packet->SetAbsCaptureTimeExtensionId(6u);
+
+	uint64_t absoluteCaptureTimestamp{ 0u };
+	bool hasEstimatedCaptureClockOffset{ false };
+	int64_t estimatedCaptureClockOffset{ 0 };
+	REQUIRE(packet->ReadAbsCaptureTime(
+	  absoluteCaptureTimestamp, hasEstimatedCaptureClockOffset, estimatedCaptureClockOffset));
+	CHECK(absoluteCaptureTimestamp == 0x0102030405060708ULL);
+
+	std::array<uint8_t, 8u> unrelatedValue{ 8u, 7u, 6u, 5u, 4u, 3u, 2u, 1u };
+	std::vector<RtpPacket::GenericExtension> replacement{ RtpPacket::GenericExtension(
+		6u, static_cast<uint8_t>(unrelatedValue.size()), unrelatedValue.data()) };
+	REQUIRE(packet->SetExtensions(1u, replacement));
+	CHECK_FALSE(packet->ReadAbsCaptureTime(
+	  absoluteCaptureTimestamp, hasEstimatedCaptureClockOffset, estimatedCaptureClockOffset));
+}
+
+TEST_CASE("RtpPacket growth operations fail transactionally at capacity", "[rtp][capacity]")
+{
+	std::array<uint8_t, 20u> storage{};
+	storage[0]  = 0x80u;
+	storage[1]  = 96u;
+	storage[2]  = 0x12u;
+	storage[3]  = 0x34u;
+	storage[11] = 1u;
+	for (size_t i{ RtpPacket::HeaderSize }; i < storage.size(); ++i)
+	{
+		storage[i] = static_cast<uint8_t>(i);
+	}
+
+	std::unique_ptr<RtpPacket> packet(RtpPacket::Parse(storage.data(), storage.size(), storage.size()));
+	REQUIRE(packet);
+	const auto before              = storage;
+	const auto* dataBefore         = packet->GetData();
+	auto* payloadBefore            = packet->GetPayload();
+	const auto payloadLengthBefore = packet->GetPayloadLength();
+	const auto paddingBefore       = packet->GetPayloadPadding();
+	const bool hadExtensions       = packet->HasHeaderExtension();
+
+	CHECK_FALSE(packet->SetPayloadLength(packet->GetPayloadLength() + 1u));
+	CHECK_FALSE(packet->SetPayloadLength(std::numeric_limits<size_t>::max()));
+	CHECK_FALSE(packet->ShiftPayload(2u, 1u, true));
+	CHECK_FALSE(packet->ShiftPayload(2u, std::numeric_limits<size_t>::max(), true));
+	CHECK_FALSE(packet->RtxEncode(97u, 22u, 33u));
+	CHECK_FALSE(packet->ShiftPayload(packet->GetPayloadLength(), 1u, false));
+	CHECK(storage == before);
+	CHECK(packet->GetData() == dataBefore);
+	CHECK(packet->GetPayload() == payloadBefore);
+	CHECK(packet->GetPayloadLength() == payloadLengthBefore);
+	CHECK(packet->GetPayloadPadding() == paddingBefore);
+	CHECK(packet->HasHeaderExtension() == hadExtensions);
+	CHECK(packet->GetSize() == storage.size());
+	CHECK(packet->GetPayloadType() == 96u);
+	CHECK(packet->GetSequenceNumber() == 0x1234u);
+	CHECK(packet->GetSsrc() == 1u);
+}
+
+TEST_CASE("RtpPacket growth operations accept exact capacity", "[rtp][capacity]")
+{
+	auto makePacket = [](uint8_t* data, size_t len, size_t capacity)
+	{
+		std::fill(data, data + capacity, 0u);
+		data[0]  = 0x80u;
+		data[1]  = 96u;
+		data[11] = 1u;
+		for (size_t i{ RtpPacket::HeaderSize }; i < len; ++i)
+		{
+			data[i] = static_cast<uint8_t>(i);
+		}
+
+		return std::unique_ptr<RtpPacket>(RtpPacket::Parse(data, len, capacity));
+	};
+
+	std::array<uint8_t, 21u> payloadStorage{};
+	auto payloadPacket = makePacket(payloadStorage.data(), 20u, payloadStorage.size());
+	REQUIRE(payloadPacket);
+	REQUIRE(payloadPacket->SetPayloadLength(9u));
+	CHECK(payloadPacket->GetSize() == payloadStorage.size());
+
+	std::array<uint8_t, 21u> shiftStorage{};
+	auto shiftPacket = makePacket(shiftStorage.data(), 20u, shiftStorage.size());
+	REQUIRE(shiftPacket);
+	REQUIRE(shiftPacket->ShiftPayload(2u, 1u, true));
+	CHECK(shiftPacket->GetPayloadLength() == 9u);
+	CHECK(shiftPacket->GetSize() == shiftStorage.size());
+
+	std::array<uint8_t, 22u> rtxStorage{};
+	auto rtxPacket = makePacket(rtxStorage.data(), 20u, rtxStorage.size());
+	REQUIRE(rtxPacket);
+	REQUIRE(rtxPacket->RtxEncode(97u, 22u, 33u));
+	CHECK(rtxPacket->GetPayloadLength() == 10u);
+	CHECK(rtxPacket->GetSize() == rtxStorage.size());
+
+	std::array<uint8_t, 21u> shortRtxStorage{};
+	auto shortRtxPacket = makePacket(shortRtxStorage.data(), 20u, shortRtxStorage.size());
+	REQUIRE(shortRtxPacket);
+	const auto shortRtxBefore = shortRtxStorage;
+	CHECK_FALSE(shortRtxPacket->RtxEncode(97u, 22u, 33u));
+	CHECK(shortRtxStorage == shortRtxBefore);
+}
+
+TEST_CASE("RtpPacket growth can consume existing RTP padding exactly", "[rtp][capacity][padding]")
+{
+	std::array<uint8_t, 24u> storage{};
+	storage[0]  = 0xa0u;
+	storage[1]  = 96u;
+	storage[11] = 1u;
+	for (size_t i{ RtpPacket::HeaderSize }; i < 20u; ++i)
+	{
+		storage[i] = static_cast<uint8_t>(i);
+	}
+	storage[23] = 4u;
+
+	std::unique_ptr<RtpPacket> packet(RtpPacket::Parse(storage.data(), storage.size(), storage.size()));
+	REQUIRE(packet);
+	REQUIRE(packet->GetPayloadLength() == 8u);
+	REQUIRE(packet->GetPayloadPadding() == 4u);
+	REQUIRE(packet->ShiftPayload(2u, 4u, true));
+	CHECK(packet->GetPayloadLength() == 12u);
+	CHECK(packet->GetPayloadPadding() == 0u);
+	CHECK(packet->GetSize() == storage.size());
+}
+
+TEST_CASE("RtpPacket clone preserves every RTP padding byte", "[rtp][clone][memory]")
+{
+	std::array<uint8_t, 24u> storage{};
+	storage[0]  = 0xa0u;
+	storage[1]  = 96u;
+	storage[11] = 1u;
+	for (size_t i{ RtpPacket::HeaderSize }; i < 20u; ++i)
+	{
+		storage[i] = static_cast<uint8_t>(0x40u + i);
+	}
+	storage[20] = 0x11u;
+	storage[21] = 0x22u;
+	storage[22] = 0x33u;
+	storage[23] = 0x04u;
+
+	std::unique_ptr<RtpPacket> packet(RtpPacket::Parse(storage.data(), storage.size()));
+	REQUIRE(packet);
+	REQUIRE(packet->GetPayloadPadding() == 4u);
+	std::unique_ptr<RtpPacket> clone(packet->Clone());
+	REQUIRE(clone);
+	CHECK(clone->GetSize() == packet->GetSize());
+	CHECK(std::equal(packet->GetData(), packet->GetData() + packet->GetSize(), clone->GetData()));
+}
+
+TEST_CASE("RTP extension growth only consumes owned padding", "[rtp][extensions][capacity]")
+{
+	std::array<uint8_t, 96u> storage{};
+	storage[0]  = 0x80u;
+	storage[1]  = 96u;
+	storage[11] = 1u;
+	std::unique_ptr<RtpPacket> packet(
+	  RtpPacket::Parse(storage.data(), RtpPacket::HeaderSize, storage.size()));
+	REQUIRE(packet);
+
+	uint8_t firstValue{ 'a' };
+	uint8_t secondValue{ 'b' };
+	std::vector<RtpPacket::GenericExtension> adjacent{
+		RtpPacket::GenericExtension(1u, 1u, &firstValue), RtpPacket::GenericExtension(2u, 1u, &secondValue)
+	};
+	REQUIRE(packet->SetExtensions(1u, adjacent));
+	packet->SetMidExtensionId(1u);
+	const auto adjacentBytes = storage;
+	CHECK_FALSE(packet->UpdateMid("xy"));
+	CHECK_FALSE(packet->SetExtensionLength(15u, 1u));
+	CHECK_FALSE(packet->SetExtensionLength(1u, 17u));
+	CHECK(storage == adjacentBytes);
+
+	std::array<uint8_t, 8u> reservedMid{};
+	std::memcpy(reservedMid.data(), "reserved", reservedMid.size());
+	std::vector<RtpPacket::GenericExtension> reserved{ RtpPacket::GenericExtension(
+		1u, static_cast<uint8_t>(reservedMid.size()), reservedMid.data()) };
+	REQUIRE(packet->SetExtensions(1u, reserved));
+	packet->SetMidExtensionId(1u);
+	REQUIRE(packet->UpdateMid("a"));
+	REQUIRE(packet->UpdateMid("12345678"));
+	std::string mid;
+	REQUIRE(packet->ReadMid(mid));
+	CHECK(mid == "12345678");
+
+	std::vector<RtpPacket::GenericExtension> emptyTwoByte{ RtpPacket::GenericExtension(
+		22u, 0u, nullptr) };
+	REQUIRE(packet->SetExtensions(2u, emptyTwoByte));
+	CHECK(packet->HasTwoBytesExtensions());
 }

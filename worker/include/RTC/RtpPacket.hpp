@@ -10,6 +10,7 @@
 #endif
 #include <flatbuffers/flatbuffers.h>
 #include <absl/container/flat_hash_map.h>
+#include <algorithm>
 #include <array>
 #include <string>
 #include <vector>
@@ -18,6 +19,8 @@ namespace RTC
 {
 	// Max MTU size.
 	constexpr size_t MtuSize{ 1500u };
+	// UDP/TCP receive buffers used by the worker's RTP ingress paths.
+	constexpr size_t MaxPacketBufferSize{ 65536u };
 	// MID header extension max length (just used when setting/updating MID
 	// extension).
 	constexpr uint8_t MidMaxLength{ 8u };
@@ -84,7 +87,7 @@ namespace RTC
 		/* Struct for replacing and setting header extensions. */
 		struct GenericExtension
 		{
-			GenericExtension(uint8_t id, uint8_t len, uint8_t* value) : id(id), len(len), value(value){};
+			GenericExtension(uint8_t id, uint8_t len, uint8_t* value) : id(id), len(len), value(value) {};
 
 			uint8_t id;
 			uint8_t len;
@@ -133,7 +136,11 @@ namespace RTC
 			// clang-format on
 		}
 
-		static RtpPacket* Parse(const uint8_t* data, size_t len);
+		static RtpPacket* Parse(const uint8_t* data, size_t len)
+		{
+			return Parse(data, len, len);
+		}
+		static RtpPacket* Parse(const uint8_t* data, size_t len, size_t capacity);
 
 	private:
 		RtpPacket(
@@ -142,7 +149,8 @@ namespace RTC
 		  const uint8_t* payload,
 		  size_t payloadLength,
 		  uint8_t payloadPadding,
-		  size_t size);
+		  size_t size,
+		  size_t capacity);
 
 	public:
 		~RtpPacket();
@@ -221,7 +229,7 @@ namespace RTC
 		}
 
 		// After calling this method, all the extension ids are reset to 0.
-		void SetExtensions(uint8_t type, const std::vector<GenericExtension>& extensions);
+		bool SetExtensions(uint8_t type, const std::vector<GenericExtension>& extensions);
 
 		uint16_t GetHeaderExtensionId() const
 		{
@@ -263,6 +271,11 @@ namespace RTC
 			return (GetHeaderExtensionId() & 0b1111111111110000) == 0b0001000000000000;
 		}
 
+		uint8_t GetMidExtensionId() const
+		{
+			return this->midExtensionId;
+		}
+
 		void SetMidExtensionId(uint8_t id)
 		{
 			this->midExtensionId = id;
@@ -278,6 +291,11 @@ namespace RTC
 			this->rridExtensionId = id;
 		}
 
+		uint8_t GetAbsSendTimeExtensionId() const
+		{
+			return this->absSendTimeExtensionId;
+		}
+
 		void SetAbsSendTimeExtensionId(uint8_t id)
 		{
 			this->absSendTimeExtensionId = id;
@@ -286,6 +304,11 @@ namespace RTC
 		void SetAbsCaptureTimeExtensionId(uint8_t id)
 		{
 			this->absCaptureTimeExtensionId = id;
+		}
+
+		uint8_t GetTransportWideCc01ExtensionId() const
+		{
+			return this->transportWideCc01ExtensionId;
 		}
 
 		void SetTransportWideCc01ExtensionId(uint8_t id)
@@ -329,7 +352,7 @@ namespace RTC
 			return true;
 		}
 
-		void UpdateMid(const std::string& mid);
+		bool UpdateMid(const std::string& mid);
 
 		bool ReadRid(std::string& rid) const
 		{
@@ -390,8 +413,7 @@ namespace RTC
 
 			if (hasEstimatedCaptureClockOffset)
 			{
-				estimatedCaptureClockOffset =
-				  static_cast<int64_t>(Utils::Byte::Get8Bytes(extenValue, 8));
+				estimatedCaptureClockOffset = static_cast<int64_t>(Utils::Byte::Get8Bytes(extenValue, 8));
 			}
 
 			return true;
@@ -556,6 +578,25 @@ namespace RTC
 			}
 		}
 
+		size_t GetExtensionCount() const
+		{
+			if (HasOneByteExtensions())
+			{
+				return static_cast<size_t>(std::count_if(
+				  this->oneByteExtensions.begin(),
+				  this->oneByteExtensions.end(),
+				  [](const auto* extension) { return extension != nullptr; }));
+			}
+			if (HasTwoBytesExtensions())
+			{
+				return static_cast<size_t>(std::count_if(
+				  this->mapTwoBytesExtensions.begin(),
+				  this->mapTwoBytesExtensions.end(),
+				  [](const auto& item) { return item.second && item.second->len != 0u; }));
+			}
+			return 0u;
+		}
+
 		uint8_t* GetExtension(uint8_t id, uint8_t& len) const
 		{
 			len = 0u;
@@ -623,7 +664,7 @@ namespace RTC
 			return this->payloadLength;
 		}
 
-		void SetPayloadLength(size_t length);
+		bool SetPayloadLength(size_t length);
 
 		uint8_t GetPayloadPadding() const
 		{
@@ -662,7 +703,7 @@ namespace RTC
 
 		RtpPacket* Clone() const;
 
-		void RtxEncode(uint8_t payloadType, uint32_t ssrc, uint16_t seq);
+		bool RtxEncode(uint8_t payloadType, uint32_t ssrc, uint16_t seq);
 
 		bool RtxDecode(uint8_t payloadType, uint32_t ssrc);
 
@@ -670,12 +711,17 @@ namespace RTC
 		{
 			this->payloadDescriptorHandler.reset(payloadDescriptorHandler);
 		}
+		void SetPayloadDescriptorHandler(
+		  std::shared_ptr<RTC::Codecs::PayloadDescriptorHandler> payloadDescriptorHandler) noexcept
+		{
+			this->payloadDescriptorHandler = std::move(payloadDescriptorHandler);
+		}
 
 		bool ProcessPayload(RTC::Codecs::EncodingContext* context, bool& marker);
 
-		void RestorePayload();
+		void RestorePayload() noexcept;
 
-		void ShiftPayload(size_t payloadOffset, size_t shift, bool expand = true);
+		bool ShiftPayload(size_t payloadOffset, size_t shift, bool expand = true);
 
 #ifdef MS_RTC_LOGGER_RTP
 	public:
@@ -707,7 +753,8 @@ namespace RTC
 		uint8_t* payload{ nullptr };
 		size_t payloadLength{ 0u };
 		uint8_t payloadPadding{ 0u };
-		size_t size{ 0u }; // Full size of the packet in bytes.
+		size_t size{ 0u };     // Full size of the packet in bytes.
+		size_t capacity{ 0u }; // Backing-buffer capacity for in-place growth.
 		// Codecs
 		std::shared_ptr<Codecs::PayloadDescriptorHandler> payloadDescriptorHandler;
 		// Buffer where this packet is allocated, can be `nullptr` if packet was

@@ -91,13 +91,29 @@ namespace Channel
 		~ChannelSocket() override;
 
 	public:
-		void Close();
+		void Close() noexcept;
 		void SetListener(Listener* listener);
 		void Send(const uint8_t* data, uint32_t dataLen);
 		void SendLog(const char* data, uint32_t dataLen);
 		bool CallbackRead();
 
+#ifdef MS_TEST
+		static void FailNextAsyncSendForTesting();
+		static size_t GetAsyncCloseCountForTesting();
+		void ProcessMessageForTesting(const FBS::Message::Message* message)
+		{
+			ProcessMessage(message);
+		}
+		bool IsClosedForTesting() const
+		{
+			return this->closed;
+		}
+#endif
+
 	private:
+		void ProcessMessage(const FBS::Message::Message* message);
+		bool RejectRequest(ChannelRequest* request, bool typeError, const char* reason) noexcept;
+		void FailClosed() noexcept;
 		void SendImpl(const uint8_t* payload, uint32_t payloadLen);
 
 		/* Pure virtual methods inherited from ConsumerSocket::Listener. */

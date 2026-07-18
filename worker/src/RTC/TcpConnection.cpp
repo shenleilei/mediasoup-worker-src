@@ -85,6 +85,14 @@ namespace RTC
 					std::memcpy(ReadBuffer, packet, packetLen);
 
 					this->listener->OnTcpConnectionPacketReceived(this, ReadBuffer, packetLen);
+
+					// The listener may synchronously request close. TcpConnectionHandle
+					// defers owner notification until the outer libuv callback unwinds, so
+					// the object is still alive here but no parser state should be touched.
+					if (IsClosed())
+					{
+						return;
+					}
 				}
 
 				// If there is no more space available in the buffer and that is because

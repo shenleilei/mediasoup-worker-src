@@ -2,6 +2,7 @@
 // #define MS_LOG_DEV_LEVEL 3
 
 #include "MediaSoupErrors.hpp"
+#include "WorkerFeatures.hpp"
 #include "lib.hpp"
 #include <cstdlib> // std::_Exit()
 #include <iostream>
@@ -16,7 +17,7 @@ int main(int argc, char* argv[])
 	{
 		if (std::string(argv[i]) == "--dump-worker-features")
 		{
-			std::cout << R"({"workerFeatures":{"h265Rtp":true,"h265RtpVersion":1}})" << std::endl;
+			std::cout << WorkerFeatures::ToJson() << std::endl;
 			std::_Exit(0);
 		}
 	}

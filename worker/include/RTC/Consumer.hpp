@@ -26,6 +26,76 @@ namespace RTC
 {
 	class Consumer : public Channel::ChannelSocket::RequestHandler
 	{
+	protected:
+		class RtpPacketMutationGuard
+		{
+		public:
+			explicit RtpPacketMutationGuard(
+			  RTC::RtpPacket* packet, bool restorePayload = false) noexcept
+			  : packet(packet),
+			    ssrc(packet->GetSsrc()),
+			    sequenceNumber(packet->GetSequenceNumber()),
+			    timestamp(packet->GetTimestamp()),
+			    marker(packet->HasMarker()),
+			    restorePayload(restorePayload)
+			{
+			}
+
+			~RtpPacketMutationGuard() noexcept
+			{
+				Restore();
+			}
+
+			RtpPacketMutationGuard(const RtpPacketMutationGuard&)            = delete;
+			RtpPacketMutationGuard& operator=(const RtpPacketMutationGuard&) = delete;
+
+		private:
+			void Restore() noexcept
+			{
+				if (!this->packet)
+				{
+					return;
+				}
+
+				this->packet->SetSsrc(this->ssrc);
+				this->packet->SetSequenceNumber(this->sequenceNumber);
+				this->packet->SetTimestamp(this->timestamp);
+				this->packet->SetMarker(this->marker);
+
+				if (this->restorePayload)
+				{
+					this->packet->RestorePayload();
+				}
+
+				this->packet = nullptr;
+			}
+
+		private:
+			RTC::RtpPacket* packet{ nullptr };
+			uint32_t ssrc{ 0u };
+			uint16_t sequenceNumber{ 0u };
+			uint32_t timestamp{ 0u };
+			bool marker{ false };
+			bool restorePayload{ false };
+		};
+
+	public:
+		struct RtpPacketFanoutContext
+		{
+			// Default lazy retransmission clone used by consumers that preserve the
+			// canonical packet layout and payload.
+			std::shared_ptr<RTC::RtpPacket> sharedPacket;
+			// PipeConsumer preserves the immutable packet layout and payload, but it
+			// rewrites SSRC and sequence number per consumer. RtpStreamSend stores those
+			// identity fields per retransmission item, so compatible PipeConsumers can
+			// share this clone without sharing it with another consumer profile.
+			std::shared_ptr<RTC::RtpPacket> pipePacket;
+			// SimpleConsumer variants keyed by their actual extension layout, semantic
+			// URI-to-id mapping and immutable payload. A fanout may therefore share one
+			// clone per compatible profile without sharing across incompatible profiles.
+			std::vector<std::shared_ptr<RTC::RtpPacket>> simpleConsumerProfiles;
+		};
+
 	public:
 		class Listener
 		{
@@ -176,9 +246,10 @@ namespace RTC
 		virtual uint32_t IncreaseLayer(uint32_t bitrate, bool considerLoss) = 0;
 		virtual void ApplyLayers()                                          = 0;
 		virtual uint32_t GetDesiredBitrate() const                          = 0;
-		virtual void SendRtpPacket(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket) = 0;
-		virtual bool GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs) = 0;
-		virtual const std::vector<RTC::RtpStreamSend*>& GetRtpStreams() const   = 0;
+		virtual void SendRtpPacket(
+		  RTC::RtpPacket* packet, RTC::Consumer::RtpPacketFanoutContext& fanoutContext) = 0;
+		virtual bool GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs)         = 0;
+		virtual const std::vector<RTC::RtpStreamSend*>& GetRtpStreams() const           = 0;
 		virtual void NeedWorstRemoteFractionLost(uint32_t mappedSsrc, uint8_t& worstRemoteFractionLost) = 0;
 		virtual void ReceiveNack(RTC::RTCP::FeedbackRtpNackPacket* nackPacket) = 0;
 		virtual void ReceiveKeyFrameRequest(

@@ -536,7 +536,8 @@ namespace RTC
 				// Copy the received packet into this buffer so it can be expanded later.
 				std::memcpy(Producer::buffer, body->data()->data(), static_cast<size_t>(len));
 
-				RTC::RtpPacket* packet = RTC::RtpPacket::Parse(Producer::buffer, len);
+				RTC::RtpPacket* packet =
+				  RTC::RtpPacket::Parse(Producer::buffer, len, RTC::MtuSize + 100u);
 
 				if (!packet)
 				{
@@ -1237,6 +1238,8 @@ namespace RTC
 	inline bool Producer::MangleRtpPacket(RTC::RtpPacket* packet, RTC::RtpStreamRecv* rtpStream) const
 	{
 		MS_TRACE();
+		const uint8_t originalPayloadType = packet->GetPayloadType();
+		const uint32_t originalSsrc       = packet->GetSsrc();
 
 		// Mangle the payload type.
 		{
@@ -1418,7 +1421,13 @@ namespace RTC
 			}
 
 			// Set the new extensions into the packet using One-Byte format.
-			packet->SetExtensions(1, extensions);
+			if (!packet->SetExtensions(1, extensions))
+			{
+				packet->SetPayloadType(originalPayloadType);
+				packet->SetSsrc(originalSsrc);
+				MS_WARN_TAG(rtp, "RTP packet has insufficient capacity for header extensions");
+				return false;
+			}
 
 			// Assign mediasoup RTP header extension ids (just those that mediasoup may
 			// be interested in after passing it to the Router).
@@ -1705,6 +1714,8 @@ namespace RTC
 
 					default:;
 				}
+
+				break;
 			}
 
 			case RTC::RTCP::Type::RTPFB:
@@ -1723,6 +1734,8 @@ namespace RTC
 
 					default:;
 				}
+
+				break;
 			}
 
 			default:;

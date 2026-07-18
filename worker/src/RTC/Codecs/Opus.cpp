@@ -3,6 +3,7 @@
 
 #include "RTC/Codecs/Opus.hpp"
 #include "Logger.hpp"
+#include <memory>
 
 namespace RTC
 {
@@ -92,16 +93,18 @@ namespace RTC
 			auto* data = packet->GetPayload();
 			auto len   = packet->GetPayloadLength();
 
-			PayloadDescriptor* payloadDescriptor = Opus::Parse(data, len);
+			auto payloadDescriptor = std::unique_ptr<PayloadDescriptor>(Opus::Parse(data, len));
 
 			if (!payloadDescriptor)
 			{
 				return;
 			}
 
-			auto* payloadDescriptorHandler = new PayloadDescriptorHandler(payloadDescriptor);
+			auto payloadDescriptorHandler =
+			  std::make_shared<PayloadDescriptorHandler>(payloadDescriptor.get());
+			payloadDescriptor.release();
 
-			packet->SetPayloadDescriptorHandler(payloadDescriptorHandler);
+			packet->SetPayloadDescriptorHandler(std::move(payloadDescriptorHandler));
 		}
 
 		/* Instance methods. */

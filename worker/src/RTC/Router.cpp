@@ -13,9 +13,198 @@
 #include "RTC/PipeTransport.hpp"
 #include "RTC/PlainTransport.hpp"
 #include "RTC/WebRtcTransport.hpp"
+#include <array>
+#include <cstring>
+#include <exception>
 
 namespace RTC
 {
+	namespace
+	{
+		class CanonicalRtpExtensions
+		{
+		private:
+			struct Snapshot
+			{
+				uint8_t id{ 0u };
+				uint8_t length{ 0u };
+				std::array<uint8_t, RTC::MidMaxLength> value{};
+				bool present{ false };
+			};
+
+		public:
+			explicit CanonicalRtpExtensions(RTC::RtpPacket* packet) : packet(packet)
+			{
+				Capture(
+				  this->mid,
+				  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::MID));
+				Capture(
+				  this->absSendTime,
+				  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::ABS_SEND_TIME));
+				Capture(
+				  this->transportWideCc,
+				  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::TRANSPORT_WIDE_CC_01));
+			}
+
+			~CanonicalRtpExtensions()
+			{
+				Restore();
+			}
+
+			void MarkDirty()
+			{
+				this->dirty = true;
+			}
+
+			void Restore() const
+			{
+				if (!this->dirty)
+				{
+					return;
+				}
+
+				Restore(this->mid);
+				Restore(this->absSendTime);
+				Restore(this->transportWideCc);
+				this->dirty = false;
+			}
+
+		private:
+			void Capture(Snapshot& snapshot, uint8_t id)
+			{
+				snapshot.id = id;
+
+				uint8_t length{ 0u };
+				auto* value = this->packet->GetExtension(id, length);
+
+				if (!value)
+				{
+					return;
+				}
+
+				MS_ASSERT(
+				  length <= snapshot.value.size(),
+				  "unexpected mutable RTP extension length [id:%" PRIu8 ", length:%" PRIu8 "]",
+				  id,
+				  length);
+
+				snapshot.length  = length;
+				snapshot.present = true;
+				std::memcpy(snapshot.value.data(), value, length);
+			}
+
+			void Restore(const Snapshot& snapshot) const
+			{
+				if (!snapshot.present)
+				{
+					return;
+				}
+
+				uint8_t currentLength{ 0u };
+				auto* value = this->packet->GetExtension(snapshot.id, currentLength);
+
+				MS_ASSERT(value, "canonical RTP extension disappeared [id:%" PRIu8 "]", snapshot.id);
+
+				if (currentLength != snapshot.length)
+				{
+					MS_ASSERT(
+					  this->packet->SetExtensionLength(snapshot.id, snapshot.length),
+					  "failed to restore canonical RTP extension length [id:%" PRIu8 "]",
+					  snapshot.id);
+					value = this->packet->GetExtension(snapshot.id, currentLength);
+					MS_ASSERT(
+					  value && currentLength == snapshot.length,
+					  "canonical RTP extension length was not restored [id:%" PRIu8 "]",
+					  snapshot.id);
+				}
+
+				std::memcpy(value, snapshot.value.data(), snapshot.length);
+			}
+
+		private:
+			RTC::RtpPacket* packet{ nullptr };
+			Snapshot mid;
+			Snapshot absSendTime;
+			Snapshot transportWideCc;
+			mutable bool dirty{ false };
+		};
+
+		template<typename ConsumerRange>
+		void SendRtpPacketToConsumers(
+		  RTC::RtpPacket* packet,
+		  const ConsumerRange& consumers)
+		{
+			CanonicalRtpExtensions canonicalExtensions(packet);
+
+			// Cloned ref-counted packet that compatible RtpStreamSend instances can
+			// share for retransmission. Incompatible SimpleConsumer profiles replace
+			// this with their own packet before storage.
+			RTC::Consumer::RtpPacketFanoutContext fanoutContext;
+
+#ifdef MS_LIBURING_SUPPORTED
+			DepLibUring::SetActive();
+#endif
+
+			for (auto* consumer : consumers)
+			{
+				canonicalExtensions.MarkDirty();
+
+				const auto& mid = consumer->GetRtpParameters().mid;
+				if (
+				  !mid.empty() &&
+				  !(consumer->GetType() == RTC::RtpParameters::Type::SIMPLE &&
+				    mid.size() > RTC::MidMaxLength))
+				{
+					if (!packet->UpdateMid(mid))
+					{
+						MS_WARN_TAG(
+						  rtp,
+						  "cannot rewrite MID for consumer [consumerId:%s, mid:%s]",
+						  consumer->id.c_str(),
+						  mid.c_str());
+						canonicalExtensions.Restore();
+						continue;
+					}
+				}
+
+				try
+				{
+					consumer->SendRtpPacket(packet, fanoutContext);
+				}
+				catch (const std::exception& error)
+				{
+					try
+					{
+						MS_ERROR(
+						  "consumer RTP send failed [consumerId:%s, reason:%s]",
+						  consumer->id.c_str(),
+						  error.what());
+					}
+					catch (...)
+					{
+					}
+				}
+				catch (...)
+				{
+					try
+					{
+						MS_ERROR(
+						  "consumer RTP send failed with unknown exception [consumerId:%s]",
+						  consumer->id.c_str());
+					}
+					catch (...)
+					{
+					}
+				}
+				canonicalExtensions.Restore();
+			}
+
+#ifdef MS_LIBURING_SUPPORTED
+			DepLibUring::Submit();
+#endif
+		}
+	} // namespace
+
 	/* Instance methods. */
 
 	Router::Router(RTC::Shared* shared, const std::string& id, Listener* listener)
@@ -674,33 +863,7 @@ namespace RTC
 
 		if (!consumers.empty())
 		{
-			// Cloned ref-counted packet that RtpStreamSend will store for as long as
-			// needed avoiding multiple allocations unless absolutely necessary.
-			// Clone only happens if needed.
-			std::shared_ptr<RTC::RtpPacket> sharedPacket;
-
-#ifdef MS_LIBURING_SUPPORTED
-			// Activate liburing usage.
-			DepLibUring::SetActive();
-#endif
-
-			for (auto* consumer : consumers)
-			{
-				// Update MID RTP extension value.
-				const auto& mid = consumer->GetRtpParameters().mid;
-
-				if (!mid.empty())
-				{
-					packet->UpdateMid(mid);
-				}
-
-				consumer->SendRtpPacket(packet, sharedPacket);
-			}
-
-#ifdef MS_LIBURING_SUPPORTED
-			// Submit all prepared submission entries.
-			DepLibUring::Submit();
-#endif
+			SendRtpPacketToConsumers(packet, consumers);
 		}
 
 		auto it = this->mapProducerRtpObservers.find(producer);
@@ -715,6 +878,15 @@ namespace RTC
 			}
 		}
 	}
+
+#ifdef MS_TEST
+	void Router::SendRtpPacketToConsumersForTesting(
+	  RTC::RtpPacket* packet,
+	  const std::vector<RTC::Consumer*>& consumers)
+	{
+		SendRtpPacketToConsumers(packet, consumers);
+	}
+#endif
 
 	inline void Router::OnTransportNeedWorstRemoteFractionLost(
 	  RTC::Transport* /*transport*/,

@@ -3,6 +3,7 @@
 
 #include "RTC/Codecs/VP9.hpp"
 #include "Logger.hpp"
+#include <memory>
 
 namespace RTC
 {
@@ -130,7 +131,8 @@ namespace RTC
 			// Read frame-marking.
 			packet->ReadFrameMarking(&frameMarking, frameMarkingLen);
 
-			PayloadDescriptor* payloadDescriptor = VP9::Parse(data, len, frameMarking, frameMarkingLen);
+			auto payloadDescriptor =
+			  std::unique_ptr<PayloadDescriptor>(VP9::Parse(data, len, frameMarking, frameMarkingLen));
 
 			if (!payloadDescriptor)
 			{
@@ -145,9 +147,11 @@ namespace RTC
 				  packet->GetTemporalLayer());
 			}
 
-			auto* payloadDescriptorHandler = new PayloadDescriptorHandler(payloadDescriptor);
+			auto payloadDescriptorHandler =
+			  std::make_shared<PayloadDescriptorHandler>(payloadDescriptor.get());
+			payloadDescriptor.release();
 
-			packet->SetPayloadDescriptorHandler(payloadDescriptorHandler);
+			packet->SetPayloadDescriptorHandler(std::move(payloadDescriptorHandler));
 		}
 
 		/* Instance methods. */
@@ -406,7 +410,7 @@ namespace RTC
 			return true;
 		}
 
-		void VP9::PayloadDescriptorHandler::Restore(uint8_t* /*data*/)
+		void VP9::PayloadDescriptorHandler::Restore(uint8_t* /*data*/) noexcept
 		{
 			MS_TRACE();
 		}

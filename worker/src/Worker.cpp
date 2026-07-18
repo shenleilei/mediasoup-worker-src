@@ -15,6 +15,7 @@
 #include "FBS/response.h"
 #include "FBS/worker.h"
 #include "RTC/ProbeEgressAdapter.hpp"
+#include <memory>
 
 /* Instance methods. */
 
@@ -32,11 +33,11 @@ Worker::Worker(::Channel::ChannelSocket* channel) : channel(channel)
 	this->shared = new RTC::Shared(
 	  /*channelMessageRegistrator*/ new ChannelMessageRegistrator(),
 	  /*channelNotifier*/ new Channel::ChannelNotifier(this->channel),
-	  /*probeEgressAdapter*/ new RTC::ProbeEgressAdapter({
-	    Settings::configuration.probeEgressEnabled,
-	    Settings::configuration.probeEgressSocketPath,
-	    Settings::configuration.probeEgressMaxPacketSize
-	  }));
+	  /*probeEgressAdapter*/
+	  new RTC::ProbeEgressAdapter(
+	    { Settings::configuration.probeEgressEnabled,
+	      Settings::configuration.probeEgressSocketPath,
+	      Settings::configuration.probeEgressMaxPacketSize }));
 
 #ifdef MS_EXECUTABLE
 	{
@@ -323,9 +324,17 @@ void Worker::HandleRequest(Channel::ChannelRequest* request)
 
 				CheckNoWebRtcServer(webRtcServerId);
 
-				auto* webRtcServer = new RTC::WebRtcServer(this->shared, webRtcServerId, body->listenInfos());
+				auto webRtcServer =
+				  std::make_unique<RTC::WebRtcServer>(this->shared, webRtcServerId, body->listenInfos());
 
-				this->mapWebRtcServers[webRtcServerId] = webRtcServer;
+				const bool inserted =
+				  this->mapWebRtcServers.emplace(webRtcServerId, webRtcServer.get()).second;
+				if (!inserted)
+				{
+					MS_THROW_ERROR("WebRtcServer already exists [webRtcServerId:%s]", webRtcServerId.c_str());
+				}
+
+				webRtcServer.release();
 
 				MS_DEBUG_DEV("WebRtcServer created [webRtcServerId:%s]", webRtcServerId.c_str());
 
@@ -360,12 +369,13 @@ void Worker::HandleRequest(Channel::ChannelRequest* request)
 				MS_THROW_ERROR("%s [method:%s]", error.what(), request->methodCStr);
 			}
 
-			// Remove it from the map and delete it.
-			this->mapWebRtcServers.erase(webRtcServer->id);
+			// The request-owned id remains valid after delete, so terminal cleanup
+			// needs no additional UUID allocation and never dereferences freed memory.
+			this->mapWebRtcServers.erase(webRtcServerId);
 
 			delete webRtcServer;
 
-			MS_DEBUG_DEV("WebRtcServer closed [id:%s]", webRtcServer->id.c_str());
+			MS_DEBUG_DEV("WebRtcServer closed [id:%s]", webRtcServerId.c_str());
 
 			request->Accept();
 
@@ -387,9 +397,15 @@ void Worker::HandleRequest(Channel::ChannelRequest* request)
 				MS_THROW_ERROR("%s [method:%s]", error.what(), request->methodCStr);
 			}
 
-			auto* router = new RTC::Router(this->shared, routerId, this);
+			auto router = std::make_unique<RTC::Router>(this->shared, routerId, this);
 
-			this->mapRouters[routerId] = router;
+			const bool inserted = this->mapRouters.emplace(routerId, router.get()).second;
+			if (!inserted)
+			{
+				MS_THROW_ERROR("Router already exists [routerId:%s]", routerId.c_str());
+			}
+
+			router.release();
 
 			MS_DEBUG_DEV("Router created [routerId:%s]", routerId.c_str());
 
@@ -415,12 +431,13 @@ void Worker::HandleRequest(Channel::ChannelRequest* request)
 				MS_THROW_ERROR("%s [method:%s]", error.what(), request->methodCStr);
 			}
 
-			// Remove it from the map and delete it.
-			this->mapRouters.erase(router->id);
+			// The request-owned id remains valid after delete, so terminal cleanup
+			// needs no additional UUID allocation and never dereferences freed memory.
+			this->mapRouters.erase(routerId);
 
 			delete router;
 
-			MS_DEBUG_DEV("Router closed [id:%s]", router->id.c_str());
+			MS_DEBUG_DEV("Router closed [id:%s]", routerId.c_str());
 
 			request->Accept();
 

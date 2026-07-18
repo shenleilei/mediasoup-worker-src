@@ -11,6 +11,16 @@
 #include "Logger.hpp"
 #include "MediaSoupErrors.hpp"
 #include <cstring> // std::memcpy()
+#include <new>
+
+#ifdef MS_TEST
+namespace
+{
+	thread_local bool failNextShutdownAllocationForTesting{ false };
+	thread_local bool failNextReadStopForTesting{ false };
+	thread_local size_t pipeCloseCountForTesting{ 0u };
+}
+#endif
 
 /* Static methods for UV callbacks. */
 
@@ -54,12 +64,11 @@ inline static void onWrite(uv_write_t* req, int status)
 // ensuring that we call `delete xxx` with same type as `new xxx` before.
 inline static void onClosePipe(uv_handle_t* handle)
 {
-	delete reinterpret_cast<uv_pipe_t*>(handle);
-}
+#ifdef MS_TEST
+	++pipeCloseCountForTesting;
+#endif
 
-inline static void onCloseShutdown(uv_handle_t* handle)
-{
-	delete reinterpret_cast<uv_shutdown_t*>(handle);
+	delete reinterpret_cast<uv_pipe_t*>(handle);
 }
 
 inline static void onShutdown(uv_shutdown_t* req, int /*status*/)
@@ -69,7 +78,7 @@ inline static void onShutdown(uv_shutdown_t* req, int /*status*/)
 	delete req;
 
 	// Now do close the handle.
-	uv_close(reinterpret_cast<uv_handle_t*>(handle), static_cast<uv_close_cb>(onCloseShutdown));
+	uv_close(reinterpret_cast<uv_handle_t*>(handle), static_cast<uv_close_cb>(onClosePipe));
 }
 
 /* Instance methods. */
@@ -136,7 +145,7 @@ UnixStreamSocketHandle::~UnixStreamSocketHandle()
 
 // NOTE: In UnixStreamSocketHandle we need a poublic Close() method and cannot
 // just rely on the destructor plus a private InternalClose() method.
-void UnixStreamSocketHandle::Close()
+void UnixStreamSocketHandle::Close() noexcept
 {
 	MS_TRACE_STD();
 
@@ -155,11 +164,21 @@ void UnixStreamSocketHandle::Close()
 	if (this->role == UnixStreamSocketHandle::Role::CONSUMER)
 	{
 		// Don't read more.
-		err = uv_read_stop(reinterpret_cast<uv_stream_t*>(this->uvHandle));
+#ifdef MS_TEST
+		if (failNextReadStopForTesting)
+		{
+			failNextReadStopForTesting = false;
+			err = UV_EINVAL;
+		}
+		else
+#endif
+		{
+			err = uv_read_stop(reinterpret_cast<uv_stream_t*>(this->uvHandle));
+		}
 
 		if (err != 0)
 		{
-			MS_ABORT("uv_read_stop() failed: %s", uv_strerror(err));
+			MS_ERROR_STD("uv_read_stop() failed while closing consumer pipe: %s", uv_strerror(err));
 		}
 	}
 
@@ -167,14 +186,38 @@ void UnixStreamSocketHandle::Close()
 	if (this->role == UnixStreamSocketHandle::Role::PRODUCER && !this->hasError && !this->isClosedByPeer)
 	{
 		// Use uv_shutdown() so pending data to be written will be sent to the peer before closing.
-		auto* req = new uv_shutdown_t;
+		uv_shutdown_t* req{ nullptr };
+
+#ifdef MS_TEST
+		if (failNextShutdownAllocationForTesting)
+		{
+			failNextShutdownAllocationForTesting = false;
+		}
+		else
+#endif
+		{
+			req = new (std::nothrow) uv_shutdown_t;
+		}
+
+		if (!req)
+		{
+			MS_ERROR_STD("cannot allocate uv_shutdown_t, closing producer pipe immediately");
+			uv_close(
+			  reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onClosePipe));
+
+			return;
+		}
+
 		req->data = static_cast<void*>(this);
 		err       = uv_shutdown(
-      req, reinterpret_cast<uv_stream_t*>(this->uvHandle), static_cast<uv_shutdown_cb>(onShutdown));
+		  req, reinterpret_cast<uv_stream_t*>(this->uvHandle), static_cast<uv_shutdown_cb>(onShutdown));
 
 		if (err != 0)
 		{
-			MS_ABORT("uv_shutdown() failed: %s", uv_strerror(err));
+			MS_ERROR_STD("uv_shutdown() failed, closing producer pipe immediately: %s", uv_strerror(err));
+			delete req;
+			uv_close(
+			  reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onClosePipe));
 		}
 	}
 	// Otherwise directly close the socket.
@@ -183,6 +226,23 @@ void UnixStreamSocketHandle::Close()
 		uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onClosePipe));
 	}
 }
+
+#ifdef MS_TEST
+void UnixStreamSocketHandle::FailNextShutdownAllocationForTesting()
+{
+	failNextShutdownAllocationForTesting = true;
+}
+
+void UnixStreamSocketHandle::FailNextReadStopForTesting()
+{
+	failNextReadStopForTesting = true;
+}
+
+size_t UnixStreamSocketHandle::GetPipeCloseCountForTesting()
+{
+	return pipeCloseCountForTesting;
+}
+#endif
 
 void UnixStreamSocketHandle::Write(const uint8_t* data, size_t len)
 {

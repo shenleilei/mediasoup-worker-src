@@ -15,8 +15,6 @@ namespace RTC
 	class Consumer;
 	class RtpPacket;
 
-#pragma pack(push, 1)
-
 	class ProbeEgressAdapter
 	{
 	public:
@@ -57,6 +55,7 @@ namespace RTC
 			uint8_t apt{ 0u };
 		};
 
+	#pragma pack(push, 1)
 		struct MessageHeader
 		{
 			uint8_t version{ 1u };
@@ -87,6 +86,7 @@ namespace RTC
 			uint16_t producerIdLength{ 0u };
 			uint16_t codecMimeLength{ 0u };
 		};
+	#pragma pack(pop)
 
 		struct Counters
 		{
@@ -100,6 +100,7 @@ namespace RTC
 			size_t socketWriteFailureCount{ 0u };
 		};
 
+	#pragma pack(push, 1)
 		struct CountersHeader
 		{
 			uint8_t version{ 1u };
@@ -114,6 +115,7 @@ namespace RTC
 			uint32_t packetMessageCount{ 0u };
 			uint32_t socketWriteFailureCount{ 0u };
 		};
+	#pragma pack(pop)
 
 	public:
 		ProbeEgressAdapter();
@@ -175,7 +177,6 @@ namespace RTC
 		size_t packetMessageCount{ 0u };
 		size_t socketWriteFailureCount{ 0u };
 	};
-#pragma pack(pop)
 } // namespace RTC
 
 #endif

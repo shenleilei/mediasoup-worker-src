@@ -15,6 +15,10 @@
 static constexpr size_t ReadBufferSize{ 65536 };
 thread_local static uint8_t ReadBuffer[ReadBufferSize];
 
+#ifdef MS_TEST
+thread_local static bool failNextFilenoForTesting{ false };
+#endif
+
 /* Static methods for UV callbacks. */
 
 inline static void onAlloc(uv_handle_t* handle, size_t suggestedSize, uv_buf_t* buf)
@@ -74,6 +78,7 @@ UdpSocketHandle::UdpSocketHandle(uv_udp_t* uvHandle) : uvHandle(uvHandle)
 
 	if (err != 0)
 	{
+		this->uvHandle->data = nullptr;
 		uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onCloseUdp));
 
 		MS_THROW_ERROR("uv_udp_recv_start() failed: %s", uv_strerror(err));
@@ -82,16 +87,32 @@ UdpSocketHandle::UdpSocketHandle(uv_udp_t* uvHandle) : uvHandle(uvHandle)
 	// Set local address.
 	if (!SetLocalAddress())
 	{
+		this->uvHandle->data = nullptr;
+		uv_udp_recv_stop(this->uvHandle);
 		uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onCloseUdp));
 
 		MS_THROW_ERROR("error setting local IP and port");
 	}
 
 #ifdef MS_LIBURING_SUPPORTED
-	err = uv_fileno(reinterpret_cast<uv_handle_t*>(this->uvHandle), std::addressof(this->fd));
+#ifdef MS_TEST
+	if (failNextFilenoForTesting)
+	{
+		failNextFilenoForTesting = false;
+		err                         = UV_EBADF;
+	}
+	else
+#endif
+	{
+		err = uv_fileno(reinterpret_cast<uv_handle_t*>(this->uvHandle), std::addressof(this->fd));
+	}
 
 	if (err != 0)
 	{
+		this->uvHandle->data = nullptr;
+		uv_udp_recv_stop(this->uvHandle);
+		uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onCloseUdp));
+
 		MS_THROW_ERROR("uv_fileno() failed: %s", uv_strerror(err));
 	}
 #endif
@@ -313,7 +334,7 @@ void UdpSocketHandle::SetRecvBufferSize(uint32_t size)
 	}
 }
 
-void UdpSocketHandle::InternalClose()
+void UdpSocketHandle::InternalClose() noexcept
 {
 	MS_TRACE();
 
@@ -332,11 +353,18 @@ void UdpSocketHandle::InternalClose()
 
 	if (err != 0)
 	{
-		MS_ABORT("uv_udp_recv_stop() failed: %s", uv_strerror(err));
+		MS_ERROR("uv_udp_recv_stop() failed while closing UDP socket: %s", uv_strerror(err));
 	}
 
 	uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onCloseUdp));
 }
+
+#ifdef MS_TEST
+void UdpSocketHandle::FailNextFilenoForTesting()
+{
+	failNextFilenoForTesting = true;
+}
+#endif
 
 bool UdpSocketHandle::SetLocalAddress()
 {

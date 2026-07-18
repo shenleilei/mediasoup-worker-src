@@ -4,6 +4,7 @@
 #include "RTC/Codecs/H265.hpp"
 #include "Logger.hpp"
 #include "Utils.hpp"
+#include <memory>
 
 namespace RTC
 {
@@ -203,7 +204,7 @@ namespace RTC
 			}
 
 			const uint8_t nalType = GetNalType(data);
-			bool parsed          = false;
+			bool parsed           = false;
 
 			switch (nalType)
 			{
@@ -243,16 +244,19 @@ namespace RTC
 
 			packet->ReadFrameMarking(&frameMarking, frameMarkingLen);
 
-			PayloadDescriptor* payloadDescriptor = H265::Parse(data, len, frameMarking, frameMarkingLen);
+			auto payloadDescriptor =
+			  std::unique_ptr<PayloadDescriptor>(H265::Parse(data, len, frameMarking, frameMarkingLen));
 
 			if (!payloadDescriptor)
 			{
 				return;
 			}
 
-			auto* payloadDescriptorHandler = new PayloadDescriptorHandler(payloadDescriptor);
+			auto payloadDescriptorHandler =
+			  std::make_shared<PayloadDescriptorHandler>(payloadDescriptor.get());
+			payloadDescriptor.release();
 
-			packet->SetPayloadDescriptorHandler(payloadDescriptorHandler);
+			packet->SetPayloadDescriptorHandler(std::move(payloadDescriptorHandler));
 		}
 
 		/* Instance methods. */
@@ -340,7 +344,7 @@ namespace RTC
 			return true;
 		}
 
-		void H265::PayloadDescriptorHandler::Restore(uint8_t* /*data*/)
+		void H265::PayloadDescriptorHandler::Restore(uint8_t* /*data*/) noexcept
 		{
 			MS_TRACE();
 		}

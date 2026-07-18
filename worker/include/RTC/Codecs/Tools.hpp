@@ -45,7 +45,7 @@ namespace RTC
 				}
 			}
 
-			static void ProcessRtpPacket(RTC::RtpPacket* packet, const RTC::RtpCodecMimeType& mimeType)
+			static bool ProcessRtpPacket(RTC::RtpPacket* packet, const RTC::RtpCodecMimeType& mimeType)
 			{
 				switch (mimeType.type)
 				{
@@ -55,38 +55,39 @@ namespace RTC
 						{
 							case RTC::RtpCodecMimeType::Subtype::VP8:
 							{
-								RTC::Codecs::VP8::ProcessRtpPacket(packet);
-
-								break;
+								return RTC::Codecs::VP8::ProcessRtpPacket(packet);
 							}
 
 							case RTC::RtpCodecMimeType::Subtype::VP9:
 							{
 								RTC::Codecs::VP9::ProcessRtpPacket(packet);
 
-								break;
+								return true;
 							}
 
 							case RTC::RtpCodecMimeType::Subtype::H264:
 							{
 								RTC::Codecs::H264::ProcessRtpPacket(packet);
 
-								break;
+								return true;
 							}
 							case RTC::RtpCodecMimeType::Subtype::H264_SVC:
 							{
 								RTC::Codecs::H264_SVC::ProcessRtpPacket(packet);
 
-								break;
+								return true;
 							}
 							case RTC::RtpCodecMimeType::Subtype::H265:
 							{
 								RTC::Codecs::H265::ProcessRtpPacket(packet);
 
-								break;
+								return true;
 							}
 
-							default:;
+							default:
+							{
+								return true;
+							}
 						}
 					}
 
@@ -99,14 +100,20 @@ namespace RTC
 							{
 								RTC::Codecs::Opus::ProcessRtpPacket(packet);
 
-								break;
+								return true;
 							}
 
-							default:;
+							default:
+							{
+								return true;
+							}
 						}
 					}
 
-					default:;
+					default:
+					{
+						return true;
+					}
 				}
 			}
 

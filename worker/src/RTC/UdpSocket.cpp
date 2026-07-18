@@ -26,7 +26,7 @@ namespace RTC
 	  uint16_t maxPort,
 	  RTC::Transport::SocketFlags& flags,
 	  uint64_t& portRangeHash)
-	  : // This may throw.
+	try : // This may throw.
 	    ::UdpSocketHandle::UdpSocketHandle(
 	      RTC::PortManager::BindUdp(ip, minPort, maxPort, flags, portRangeHash)),
 	    listener(listener), fixedPort(false)
@@ -34,6 +34,12 @@ namespace RTC
 		MS_TRACE();
 
 		this->portRangeHash = portRangeHash;
+		RTC::PortManager::CommitPendingRangeBinding(portRangeHash);
+	}
+	catch (...)
+	{
+		RTC::PortManager::RollbackPendingRangeBinding();
+		throw;
 	}
 
 	UdpSocket::~UdpSocket()

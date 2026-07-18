@@ -4,6 +4,7 @@
 #include "RTC/Codecs/VP8.hpp"
 #include "Logger.hpp"
 #include <cstring> // std::memcpy()
+#include <memory>
 
 namespace RTC
 {
@@ -137,7 +138,7 @@ namespace RTC
 			return payloadDescriptor.release();
 		}
 
-		void VP8::ProcessRtpPacket(RTC::RtpPacket* packet)
+		bool VP8::ProcessRtpPacket(RTC::RtpPacket* packet)
 		{
 			MS_TRACE();
 
@@ -149,30 +150,38 @@ namespace RTC
 			// Read frame-marking.
 			packet->ReadFrameMarking(&frameMarking, frameMarkingLen);
 
-			PayloadDescriptor* payloadDescriptor = VP8::Parse(data, len, frameMarking, frameMarkingLen);
+			auto payloadDescriptor =
+			  std::unique_ptr<PayloadDescriptor>(VP8::Parse(data, len, frameMarking, frameMarkingLen));
 
 			if (!payloadDescriptor)
 			{
-				return;
+				return true;
 			}
 
-			auto* payloadDescriptorHandler = new PayloadDescriptorHandler(payloadDescriptor);
-
-			packet->SetPayloadDescriptorHandler(payloadDescriptorHandler);
+			auto* descriptor              = payloadDescriptor.get();
+			auto payloadDescriptorHandler = std::make_shared<PayloadDescriptorHandler>(descriptor);
+			payloadDescriptor.release();
 
 			// Modify the RtpPacket payload in order to always have two byte pictureId.
-			if (payloadDescriptor->hasOneBytePictureId)
+			if (descriptor->hasOneBytePictureId)
 			{
 				// Shift the RTP payload one byte from the begining of the pictureId field.
-				packet->ShiftPayload(2, 1, true /*expand*/);
+				if (!packet->ShiftPayload(2, 1, true /*expand*/))
+				{
+					return false;
+				}
 
 				// Set the two byte pictureId marker bit.
 				data[2] = 0x80;
 
 				// Update the payloadDescriptor.
-				payloadDescriptor->hasOneBytePictureId  = false;
-				payloadDescriptor->hasTwoBytesPictureId = true;
+				descriptor->hasOneBytePictureId  = false;
+				descriptor->hasTwoBytesPictureId = true;
 			}
+
+			packet->SetPayloadDescriptorHandler(std::move(payloadDescriptorHandler));
+
+			return true;
 		}
 
 		/* Instance methods. */
@@ -242,7 +251,7 @@ namespace RTC
 			}
 		}
 
-		void VP8::PayloadDescriptor::Restore(uint8_t* data) const
+		void VP8::PayloadDescriptor::Restore(uint8_t* data) const noexcept
 		{
 			MS_TRACE();
 
@@ -388,7 +397,7 @@ namespace RTC
 			return true;
 		};
 
-		void VP8::PayloadDescriptorHandler::Restore(uint8_t* data)
+		void VP8::PayloadDescriptorHandler::Restore(uint8_t* data) noexcept
 		{
 			MS_TRACE();
 

@@ -121,6 +121,7 @@ void validate(std::vector<TestTransportCongestionControlServerInput>& inputs, Te
 
 	tccServer.FillAndSendTransportCcFeedback();
 	listener.Check();
+	delete packet;
 };
 
 SCENARIO("TransportCongestionControlServer", "[rtp]")

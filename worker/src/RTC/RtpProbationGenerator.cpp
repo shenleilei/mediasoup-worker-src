@@ -41,14 +41,15 @@ namespace RTC
 		MS_TRACE();
 
 		// Allocate the probation RTP packet buffer.
-		this->probationPacketBuffer = new uint8_t[MaxProbationPacketSize];
+		this->probationPacketBuffer = new uint8_t[MaxProbationPacketSize]{};
 
 		// Copy the generic probation RTP packet header into the buffer.
 		std::memcpy(this->probationPacketBuffer, ProbationPacketHeader, ProbationPacketHeaderSize);
 
 		// Create the probation RTP packet.
-		this->probationPacket =
-		  RTC::RtpPacket::Parse(this->probationPacketBuffer, MaxProbationPacketSize);
+		this->probationPacket = RTC::RtpPacket::Parse(
+		  this->probationPacketBuffer, ProbationPacketHeaderSize, MaxProbationPacketSize);
+		MS_ASSERT(this->probationPacket, "failed to parse the fixed probation RTP packet");
 
 		// Sex fixed codec payload type.
 		this->probationPacket->SetPayloadType(RTC::RtpProbationCodecPayloadType);
@@ -106,7 +107,9 @@ namespace RTC
 		}
 
 		// Set the extensions into the packet using One-Byte format.
-		this->probationPacket->SetExtensions(1, extensions);
+		MS_ASSERT(
+		  this->probationPacket->SetExtensions(1, extensions),
+		  "probation RTP packet buffer cannot hold its fixed extensions");
 
 		// Set our urn:ietf:params:rtp-hdrext:sdes:mid extension id.
 		this->probationPacket->SetMidExtensionId(
@@ -158,7 +161,9 @@ namespace RTC
 		this->probationPacket->SetTimestamp(timestamp);
 
 		// Set probation packet payload size.
-		this->probationPacket->SetPayloadLength(size - ProbationPacketHeaderSize);
+		MS_ASSERT(
+		  this->probationPacket->SetPayloadLength(size - ProbationPacketHeaderSize),
+		  "probation RTP packet exceeds its fixed buffer capacity");
 
 		return this->probationPacket;
 	}

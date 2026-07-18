@@ -43,7 +43,7 @@ namespace RTC
 				void Dump() const override;
 				// Rewrite the buffer with the given pictureId and tl0PictureIndex values.
 				void Encode(uint8_t* data, uint16_t pictureId, uint8_t tl0PictureIndex) const;
-				void Restore(uint8_t* data) const;
+				void Restore(uint8_t* data) const noexcept;
 
 				// Mandatory fields.
 				uint8_t extended : 1;
@@ -76,7 +76,7 @@ namespace RTC
 			  size_t len,
 			  RTC::RtpPacket::FrameMarking* frameMarking = nullptr,
 			  uint8_t frameMarkingLen                    = 0);
-			static void ProcessRtpPacket(RTC::RtpPacket* packet);
+			static bool ProcessRtpPacket(RTC::RtpPacket* packet);
 
 		public:
 			class EncodingContext : public RTC::Codecs::EncodingContext
@@ -114,7 +114,7 @@ namespace RTC
 					this->payloadDescriptor->Dump();
 				}
 				bool Process(RTC::Codecs::EncodingContext* encodingContext, uint8_t* data, bool& marker) override;
-				void Restore(uint8_t* data) override;
+				void Restore(uint8_t* data) noexcept override;
 				uint8_t GetSpatialLayer() const override
 				{
 					return 0u;

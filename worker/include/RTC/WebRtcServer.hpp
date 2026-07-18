@@ -14,6 +14,7 @@
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace RTC
@@ -29,8 +30,8 @@ namespace RTC
 		{
 			// Expose a constructor to use vector.emplace_back().
 			UdpSocketOrTcpServer(
-			  RTC::UdpSocket* udpSocket, RTC::TcpServer* tcpServer, std::string& announcedAddress)
-			  : udpSocket(udpSocket), tcpServer(tcpServer), announcedAddress(announcedAddress)
+			  RTC::UdpSocket* udpSocket, RTC::TcpServer* tcpServer, std::string announcedAddress) noexcept
+			  : udpSocket(udpSocket), tcpServer(tcpServer), announcedAddress(std::move(announcedAddress))
 			{
 			}
 
@@ -48,6 +49,21 @@ namespace RTC
 		  const std::string& id,
 		  const flatbuffers::Vector<flatbuffers::Offset<FBS::Transport::ListenInfo>>* listenInfos);
 		~WebRtcServer() override;
+
+#ifdef MS_TEST
+		enum class ConstructionFailurePointForTesting
+		{
+			NONE = 0,
+			BEFORE_SOCKET_PUBLICATION,
+			AFTER_SOCKET_PUBLICATION
+		};
+
+		static void SetConstructionFailurePointForTesting(
+		  ConstructionFailurePointForTesting failurePoint)
+		{
+			constructionFailurePointForTesting = failurePoint;
+		}
+#endif
 
 	public:
 		flatbuffers::Offset<FBS::WebRtcServer::DumpResponse> FillBuffer(
@@ -108,6 +124,11 @@ namespace RTC
 		absl::flat_hash_map<uint64_t, RTC::WebRtcTransport*> mapTupleWebRtcTransport;
 		// Whether the destructor has been called.
 		bool closing{ false };
+
+#ifdef MS_TEST
+		static ConstructionFailurePointForTesting constructionFailurePointForTesting;
+		static void MaybeFailConstructionForTesting(ConstructionFailurePointForTesting failurePoint);
+#endif
 	};
 } // namespace RTC
 

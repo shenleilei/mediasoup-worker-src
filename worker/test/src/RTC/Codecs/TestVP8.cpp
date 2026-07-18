@@ -1,7 +1,9 @@
 #include "common.hpp"
 #include "RTC/Codecs/VP8.hpp"
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstring> // std::memcmp(), std::memcpy()
+#include <memory>
 
 using namespace RTC;
 
@@ -211,6 +213,27 @@ SCENARIO("parse VP8 payload descriptor", "[codecs][vp8]")
 
 		REQUIRE_FALSE(payloadDescriptor);
 	}
+}
+
+TEST_CASE(
+  "VP8 normalization rejects a full-capacity packet without writing past it",
+  "[codecs][vp8][capacity]")
+{
+	std::array<uint8_t, RTC::MtuSize + 100u> storage{};
+	storage[0]        = 0x80u;
+	storage[1]        = 96u;
+	storage[11]       = 1u;
+	storage[12]       = 0xd0u;
+	storage[13]       = 0x80u;
+	storage[14]       = 0x11u;
+	const auto before = storage;
+
+	std::unique_ptr<RTC::RtpPacket> packet(
+	  RTC::RtpPacket::Parse(storage.data(), storage.size(), storage.size()));
+	REQUIRE(packet);
+	CHECK_FALSE(RTC::Codecs::VP8::ProcessRtpPacket(packet.get()));
+	CHECK(storage == before);
+	CHECK(packet->GetSize() == storage.size());
 }
 
 Codecs::VP8::PayloadDescriptor* CreatePacket(

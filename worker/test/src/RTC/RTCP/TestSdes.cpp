@@ -447,6 +447,7 @@ SCENARIO("RTCP SDES parsing", "[parser][rtcp][sdes]")
 
 		REQUIRE(packet3 == nullptr);
 
+		delete packet2;
 		delete packet3;
 	}
 

@@ -63,7 +63,8 @@ namespace RTC
 		uint32_t IncreaseLayer(uint32_t bitrate, bool considerLoss) override;
 		void ApplyLayers() override;
 		uint32_t GetDesiredBitrate() const override;
-		void SendRtpPacket(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket) override;
+		void SendRtpPacket(
+		  RTC::RtpPacket* packet, RTC::Consumer::RtpPacketFanoutContext& fanoutContext) override;
 		bool GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs) override;
 		const std::vector<RTC::RtpStreamSend*>& GetRtpStreams() const override
 		{

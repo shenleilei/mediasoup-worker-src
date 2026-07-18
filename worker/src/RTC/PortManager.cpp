@@ -34,6 +34,7 @@ namespace RTC
 	/* Class variables. */
 
 	thread_local absl::flat_hash_map<uint64_t, PortManager::PortRange> PortManager::mapPortRanges;
+	thread_local PortManager::PendingRangeBinding PortManager::pendingRangeBinding;
 
 	/* Class methods. */
 
@@ -317,9 +318,10 @@ namespace RTC
 			}
 		}
 
-		hash = GeneratePortRangeHash(protocol, std::addressof(bindAddr), minPort, maxPort);
+		const auto generatedHash =
+		  GeneratePortRangeHash(protocol, std::addressof(bindAddr), minPort, maxPort);
 
-		auto& portRange          = PortManager::GetOrCreatePortRange(hash, minPort, maxPort);
+		auto& portRange          = PortManager::GetOrCreatePortRange(generatedHash, minPort, maxPort);
 		const size_t numPorts    = portRange.ports.size();
 		const size_t numAttempts = numPorts;
 		size_t attempt{ 0u };
@@ -578,6 +580,18 @@ namespace RTC
 		// Increase number of used ports in the range.
 		portRange.numUsedPorts++;
 
+		// Range socket constructors synchronously commit this reservation after
+		// every throwing base-construction step has completed. Until then, keep a
+		// single thread-local rollback record so a failed base constructor cannot
+		// permanently consume a logical range slot.
+		MS_ASSERT(
+		  !PortManager::pendingRangeBinding.active,
+		  "previous port range binding was not committed or rolled back");
+		PortManager::pendingRangeBinding.active = true;
+		PortManager::pendingRangeBinding.hash   = generatedHash;
+		PortManager::pendingRangeBinding.port   = port;
+		hash                                    = generatedHash;
+
 		MS_DEBUG_DEV(
 		  "bind succeeded [protocol:%s, ip:'%s', port:%" PRIu16 ", attempt:%zu/%zu]",
 		  protocolStr.c_str(),
@@ -587,6 +601,55 @@ namespace RTC
 		  numAttempts);
 
 		return static_cast<uv_handle_t*>(uvHandle);
+	}
+
+	void PortManager::CommitPendingRangeBinding(uint64_t hash) noexcept
+	{
+		if (!PortManager::pendingRangeBinding.active ||
+		    PortManager::pendingRangeBinding.hash != hash)
+		{
+			return;
+		}
+
+		PortManager::pendingRangeBinding = {};
+	}
+
+	void PortManager::RollbackPendingRangeBinding() noexcept
+	{
+		if (!PortManager::pendingRangeBinding.active)
+		{
+			return;
+		}
+
+		const auto pending = PortManager::pendingRangeBinding;
+		PortManager::pendingRangeBinding = {};
+
+		auto it = PortManager::mapPortRanges.find(pending.hash);
+
+		if (it == PortManager::mapPortRanges.end())
+		{
+			return;
+		}
+
+		auto& portRange = it->second;
+		if (pending.port < portRange.minPort)
+		{
+			return;
+		}
+
+		const auto portIdx = static_cast<size_t>(pending.port - portRange.minPort);
+		if (portIdx >= portRange.ports.size() || !portRange.ports[portIdx] ||
+		    portRange.numUsedPorts == 0u)
+		{
+			return;
+		}
+
+		portRange.ports[portIdx] = false;
+		--portRange.numUsedPorts;
+		if (portRange.numUsedPorts == 0u)
+		{
+			PortManager::mapPortRanges.erase(it);
+		}
 	}
 
 	void PortManager::Unbind(uint64_t hash, uint16_t port)

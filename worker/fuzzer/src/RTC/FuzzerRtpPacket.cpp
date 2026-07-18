@@ -14,8 +14,14 @@ void Fuzzer::RTC::RtpPacket::Fuzz(const uint8_t* data, size_t len)
 	// We need to clone the given data into a separate buffer because setters
 	// below will try to write into packet memory.
 	//
-	// NOTE: Let's make the buffer bigger to test API that increases packet size.
-	uint8_t data2[len + 64];
+	// Keep fuzz allocations bounded and provide real headroom to the mutable
+	// packet API. A VLA here could turn an arbitrary fuzz input into a stack
+	// exhaustion before the packet code is exercised.
+	if (len > ::RTC::MaxPacketBufferSize - 64u)
+	{
+		return;
+	}
+	std::vector<uint8_t> data2(len + 64u);
 	uint8_t extenLen;
 	bool voice;
 	uint8_t volume;
@@ -28,9 +34,9 @@ void Fuzzer::RTC::RtpPacket::Fuzz(const uint8_t* data, size_t len)
 	std::string rid;
 	std::vector<::RTC::RtpPacket::GenericExtension> extensions;
 
-	std::memcpy(data2, data, len);
+	std::memcpy(data2.data(), data, len);
 
-	::RTC::RtpPacket* packet = ::RTC::RtpPacket::Parse(data2, len);
+	::RTC::RtpPacket* packet = ::RTC::RtpPacket::Parse(data2.data(), len, data2.size());
 
 	if (!packet)
 	{

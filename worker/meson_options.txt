@@ -1,4 +1,6 @@
 option('ms_log_trace', type : 'boolean', value : false, description : 'When set to true, logs the current method/function if current log level is "debug"')
 option('ms_log_file_line', type : 'boolean', value : false, description : 'When set to true, all the logging macros print more verbose information, including current file and line')
 option('ms_rtc_logger_rtp', type : 'boolean', value : false, description : 'When set to true, prints a line with information for each RTP packet')
-option('ms_disable_liburing', type : 'boolean', value : false, description : 'When set to true, disables liburing integration despite current host supports it')
+option('ms_enable_liburing', type : 'boolean', value : false, description : 'When set to true, explicitly enables liburing integration on supported Linux build hosts; it is disabled by default on every builder')
+option('ms_disable_liburing', type : 'boolean', value : false, description : 'Legacy override that disables an explicit liburing enable request')
+option('ms_force_liburing', type : 'boolean', value : false, description : 'When set to true, compiles liburing integration on older build kernels for CI validation; runtime support checks still apply')

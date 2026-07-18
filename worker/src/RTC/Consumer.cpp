@@ -25,6 +25,17 @@ namespace RTC
 		// This may throw.
 		this->rtpParameters = RTC::RtpParameters(data->rtpParameters());
 
+		if (
+		  (this->type == RTC::RtpParameters::Type::SIMULCAST ||
+		   this->type == RTC::RtpParameters::Type::SVC) &&
+		  this->rtpParameters.mid.size() > RTC::MidMaxLength)
+		{
+			MS_THROW_TYPE_ERROR(
+			  "rtpParameters.mid exceeds the supported length for %s Consumer [max:%" PRIu8 "]",
+			  RTC::RtpParameters::GetTypeString(this->type).c_str(),
+			  RTC::MidMaxLength);
+		}
+
 		if (this->rtpParameters.encodings.empty())
 		{
 			MS_THROW_TYPE_ERROR("empty rtpParameters.encodings");

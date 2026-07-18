@@ -21,11 +21,15 @@
 import sys;
 import os;
 import inspect;
+import json;
+import shlex;
 import shutil;
+import subprocess;
 # We import this from a custom location and pylint doesn't know.
 from invoke import task, call; # pylint: disable=import-error
 
 MEDIASOUP_BUILDTYPE = os.getenv('MEDIASOUP_BUILDTYPE') or 'Release';
+MEDIASOUP_KEEP_DEBUG = os.getenv('MEDIASOUP_KEEP_DEBUG') == '1';
 WORKER_DIR = os.path.dirname(os.path.abspath(
     inspect.getframeinfo(inspect.currentframe()).filename
 ));
@@ -58,6 +62,144 @@ MESON_VERSION = os.getenv('MESON_VERSION') or '1.3.0';
 # NOTE: On Windows make sure to add `--vsenv` or have MSVS environment already
 # active if you override this parameter.
 MESON_ARGS = os.getenv('MESON_ARGS') if os.getenv('MESON_ARGS') else '--vsenv' if os.name == 'nt' else '';
+# Meson persists built-in options in an existing build directory.  On Unix,
+# normal builds explicitly clear sanitizer-only settings selected by an
+# earlier diagnostic build.  Meson does not apply a consistent "last duplicate
+# wins" rule across all built-in options, so defaults are omitted whenever the
+# caller supplied that option in MESON_ARGS.
+MESON_DEFAULT_OPTIONS = {
+    'b_sanitize': 'none',
+    'b_lundef': 'true',
+    'c_args': '',
+    'cpp_args': '',
+    'ms_enable_liburing': 'false',
+    'ms_disable_liburing': 'false',
+    'ms_force_liburing': 'false'
+};
+MESON_STICKY_OPTIONS = (
+    'b_sanitize',
+    'b_lundef',
+    'b_ndebug',
+    'c_args',
+    'cpp_args',
+    'ms_enable_liburing',
+    'ms_disable_liburing',
+    'ms_force_liburing'
+);
+
+
+def meson_option_names(args):
+    """Return built-in option names explicitly selected in a Meson arg string."""
+    tokens = shlex.split(args or '');
+    names = set();
+    index = 0;
+    while index < len(tokens):
+        token = tokens[index];
+        option = None;
+        if token == '-D' and index + 1 < len(tokens):
+            index += 1;
+            option = tokens[index];
+        elif token.startswith('-D') and len(token) > 2:
+            option = token[2:];
+        elif token == '--buildtype' and index + 1 < len(tokens):
+            index += 1;
+            names.add('buildtype');
+        elif token.startswith('--buildtype='):
+            names.add('buildtype');
+        if option:
+            names.add(option.split('=', 1)[0]);
+        index += 1;
+    return names;
+
+
+def meson_option_values(args):
+    """Return explicitly selected Meson option values."""
+    tokens = shlex.split(args or '');
+    values = {};
+    index = 0;
+    while index < len(tokens):
+        token = tokens[index];
+        option = None;
+        if token == '-D' and index + 1 < len(tokens):
+            index += 1;
+            option = tokens[index];
+        elif token.startswith('-D') and len(token) > 2:
+            option = token[2:];
+        if option and '=' in option:
+            name, value = option.split('=', 1);
+            values[name] = value;
+        index += 1;
+    return values;
+
+
+def normalized_meson_option(name, value):
+    if name == 'b_sanitize':
+        if isinstance(value, list):
+            return sorted(value);
+        normalized = str(value).strip().lower();
+        if normalized in ('', 'none'):
+            return [];
+        return sorted(item.strip() for item in normalized.split(',') if item.strip());
+    if name in ('b_lundef', 'ms_enable_liburing', 'ms_disable_liburing', 'ms_force_liburing'):
+        return str(value).lower() == 'true';
+    if name in ('c_args', 'cpp_args'):
+        # Meson introspection returns compiler arguments as a JSON array, while
+        # MESON_ARGS supplies the desired value as a shell string. Normalize
+        # both representations without passing a list into shlex.split().
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value];
+        return shlex.split(str(value)) if value else [];
+    return value;
+
+
+def desired_sticky_options(explicit_values):
+    values = {} if os.name == 'nt' else dict(MESON_DEFAULT_OPTIONS);
+    for name in MESON_STICKY_OPTIONS:
+        if name in explicit_values:
+            values[name] = explicit_values[name];
+    return {
+        name: normalized_meson_option(name, value)
+        for name, value in values.items()
+    };
+
+
+def current_meson_options():
+    """Read configured options, returning None when the build is unreadable."""
+    try:
+        result = subprocess.run(
+            [MESON, 'introspect', BUILD_DIR, '--buildoptions'],
+            check=True,
+            capture_output=True,
+            text=True
+        );
+        return {
+            option['name']: normalized_meson_option(option['name'], option['value'])
+            for option in json.loads(result.stdout)
+        };
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return None;
+
+
+def meson_reconfigure_arg(configured, desired_options):
+    if not configured:
+        return '';
+    current_options = current_meson_options();
+    if current_options is None or any(
+        current_options.get(name) != value
+        for name, value in desired_options.items()
+    ):
+        return '--wipe';
+    return '--reconfigure';
+
+
+def meson_default_args(explicit_options):
+    if os.name == 'nt':
+        return '';
+    return ' '.join(
+        f'-D{name}={value}'
+        for name, value in MESON_DEFAULT_OPTIONS.items()
+        if name not in explicit_options
+    );
 # Let's use a specific version of ninja to avoid buggy version 1.11.1:
 # https://mediasoup.discourse.group/t/partly-solved-could-not-detect-ninja-v1-8-2-or-newer/
 # https://github.com/ninja-build/ninja/issues/2211
@@ -139,26 +281,64 @@ def setup(ctx, meson_args=MESON_ARGS):
     """
     Run meson setup
     """
+    configured = os.path.isfile(
+        os.path.join(BUILD_DIR, 'meson-private', 'coredata.dat')
+    );
+    explicit_options = meson_option_names(meson_args);
+    explicit_values = meson_option_values(meson_args);
+    sticky_options = desired_sticky_options(explicit_values);
+    default_args = meson_default_args(explicit_options);
     if MEDIASOUP_BUILDTYPE == 'Release':
         with ctx.cd(f'"{WORKER_DIR}"'):
+            # Production symbol builds must keep release optimization.  Meson
+            # represents optimization=3 + debug=true as a custom build type,
+            # but the resulting code-generation policy remains release-grade.
+            release_buildtype = 'custom' if (
+                MEDIASOUP_KEEP_DEBUG or
+                'optimization' in explicit_options or
+                'debug' in explicit_options
+            ) else 'release';
+            release_debug_args = ' '.join(
+                value
+                for name, value in (
+                    ('optimization', '-Doptimization=3'),
+                    ('debug', f'-Ddebug={"true" if MEDIASOUP_KEEP_DEBUG else "false"}')
+                )
+                if name not in explicit_options
+            );
+            desired_ndebug = explicit_values.get('b_ndebug', 'true');
+            ndebug_arg = f'-Db_ndebug={desired_ndebug}' if 'b_ndebug' not in explicit_options else '';
+            release_sticky_options = dict(sticky_options);
+            release_sticky_options['b_ndebug'] = desired_ndebug;
+            reconfigure_arg = meson_reconfigure_arg(configured, release_sticky_options);
             ctx.run(
-                f'"{MESON}" setup --prefix "{MEDIASOUP_INSTALL_DIR}" --bindir "" --libdir "" --buildtype release -Db_ndebug=true {meson_args} "{BUILD_DIR}"',
+                f'"{MESON}" setup {reconfigure_arg} --prefix "{MEDIASOUP_INSTALL_DIR}" --bindir "" --libdir "" --buildtype {release_buildtype} {ndebug_arg} {default_args} {release_debug_args} {meson_args} "{BUILD_DIR}"',
                 echo=True,
                 pty=PTY_SUPPORTED,
                 shell=SHELL
             );
     elif MEDIASOUP_BUILDTYPE == 'Debug':
         with ctx.cd(f'"{WORKER_DIR}"'):
+            desired_ndebug = explicit_values.get('b_ndebug', 'false');
+            ndebug_arg = f'-Db_ndebug={desired_ndebug}' if 'b_ndebug' not in explicit_options else '';
+            debug_sticky_options = dict(sticky_options);
+            debug_sticky_options['b_ndebug'] = desired_ndebug;
+            reconfigure_arg = meson_reconfigure_arg(configured, debug_sticky_options);
             ctx.run(
-                f'"{MESON}" setup --prefix "{MEDIASOUP_INSTALL_DIR}" --bindir "" --libdir "" --buildtype debug {meson_args} "{BUILD_DIR}"',
+                f'"{MESON}" setup {reconfigure_arg} --prefix "{MEDIASOUP_INSTALL_DIR}" --bindir "" --libdir "" --buildtype debug {ndebug_arg} {default_args} {meson_args} "{BUILD_DIR}"',
                 echo=True,
                 pty=PTY_SUPPORTED,
                 shell=SHELL
             );
     else:
         with ctx.cd(f'"{WORKER_DIR}"'):
+            desired_ndebug = explicit_values.get('b_ndebug', 'if-release');
+            ndebug_arg = f'-Db_ndebug={desired_ndebug}' if 'b_ndebug' not in explicit_options else '';
+            custom_sticky_options = dict(sticky_options);
+            custom_sticky_options['b_ndebug'] = desired_ndebug;
+            reconfigure_arg = meson_reconfigure_arg(configured, custom_sticky_options);
             ctx.run(
-                f'"{MESON}" setup --prefix "{MEDIASOUP_INSTALL_DIR}" --bindir "" --libdir "" --buildtype {MEDIASOUP_BUILDTYPE} -Db_ndebug=if-release {meson_args} "{BUILD_DIR}"',
+                f'"{MESON}" setup {reconfigure_arg} --prefix "{MEDIASOUP_INSTALL_DIR}" --bindir "" --libdir "" --buildtype {MEDIASOUP_BUILDTYPE} {ndebug_arg} {default_args} {meson_args} "{BUILD_DIR}"',
                 echo=True,
                 pty=PTY_SUPPORTED,
                 shell=SHELL
@@ -428,7 +608,7 @@ def test_asan(ctx):
 
     with ctx.cd(f'"{WORKER_DIR}"'):
         ctx.run(
-            f'ASAN_OPTIONS=detect_leaks=1 "{BUILD_DIR}/mediasoup-worker-test-asan" --invisibles --use-colour=yes {mediasoup_test_tags}',
+            f'ASAN_OPTIONS=detect_leaks=1 "{BUILD_DIR}/mediasoup-worker-test-asan" --invisibles --colour-mode=ansi {mediasoup_test_tags}',
             echo=True,
             pty=PTY_SUPPORTED,
             shell=SHELL

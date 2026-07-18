@@ -60,7 +60,7 @@ namespace RTC
 		  const std::string& usernameFragment,
 		  const std::string& password,
 		  uint8_t consentTimeoutSec);
-		~IceServer() override;
+		~IceServer() noexcept override;
 
 	public:
 		void ProcessStunPacket(RTC::StunPacket* packet, RTC::TransportTuple* tuple);
@@ -83,6 +83,21 @@ namespace RTC
 		void RestartIce(const std::string& usernameFragment, const std::string& password);
 		bool IsValidTuple(const RTC::TransportTuple* tuple) const;
 		void RemoveTuple(RTC::TransportTuple* tuple);
+#ifdef MS_TEST
+		RTC::TransportTuple* AddTupleForTesting(RTC::TransportTuple* tuple)
+		{
+			return AddTuple(tuple);
+		}
+		size_t GetTupleCountForTesting() const
+		{
+			return this->tuples.size();
+		}
+		void StartConsentTimeoutForTesting(RTC::TransportTuple* tuple, uint64_t timeoutMs);
+		bool IsConsentCheckRunningForTesting() const
+		{
+			return IsConsentCheckRunning();
+		}
+#endif
 		/**
 		 * This should be just called in 'connected' or 'completed' state and the
 		 * given tuple must be an already valid tuple.
@@ -122,7 +137,7 @@ namespace RTC
 
 		/* Pure virtual methods inherited from TimerHandle::Listener. */
 	public:
-		void OnTimer(TimerHandle* timer) override;
+		void OnTimer(TimerHandle* timer) noexcept override;
 
 	private:
 		// Passed by argument.

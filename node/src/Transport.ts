@@ -316,6 +316,8 @@ type RecvRtpHeaderExtensions = {
 };
 
 const logger = new Logger('Transport');
+const MAX_MID_BYTE_LENGTH = 255;
+const MAX_LAYERED_CONSUMER_MID_BYTE_LENGTH = 8;
 
 export class Transport<
 	TransportAppData extends AppData = AppData,
@@ -882,6 +884,25 @@ export class Transport<
 
 		if (!producer) {
 			throw Error(`Producer with id "${producerId}" not found`);
+		}
+
+		if (!pipe && mid) {
+			const midByteLength = Buffer.byteLength(mid, 'utf8');
+
+			if (midByteLength > MAX_MID_BYTE_LENGTH) {
+				throw new TypeError(
+					`mid exceeds the maximum RTP extension length of ${MAX_MID_BYTE_LENGTH} bytes`
+				);
+			}
+
+			if (
+				producer.type !== 'simple' &&
+				midByteLength > MAX_LAYERED_CONSUMER_MID_BYTE_LENGTH
+			) {
+				throw new TypeError(
+					`${producer.type} Consumer mid cannot exceed ${MAX_LAYERED_CONSUMER_MID_BYTE_LENGTH} bytes`
+				);
+			}
 		}
 
 		// If enableRtx is not given, set it to true if video and false if audio.

@@ -194,7 +194,7 @@ namespace RTC
 		MS_TRACE();
 
 		// Ensure that the resulting SRTP packet fits into the encrypt buffer.
-		if (*len + SRTP_MAX_TRAILER_LEN > EncryptBufferSize)
+		if (SRTP_MAX_TRAILER_LEN > EncryptBufferSize || *len > EncryptBufferSize - SRTP_MAX_TRAILER_LEN)
 		{
 			MS_WARN_TAG(srtp, "cannot encrypt RTP packet, size too big (%zu bytes)", *len);
 
@@ -210,8 +210,11 @@ namespace RTC
 				goto protect;
 			}
 
-			// Use a preallocated buffer, if available.
-			auto* sendBuffer = DepLibUring::GetSendBuffer();
+			// Use a preallocated buffer only if SRTP can append its trailer without
+			// exceeding the fixed io_uring slot.
+			auto* sendBuffer = DepLibUring::CanStoreSendDataWithTrailer(*len, SRTP_MAX_TRAILER_LEN)
+			                     ? DepLibUring::GetSendBuffer()
+			                     : nullptr;
 
 			if (sendBuffer)
 			{
@@ -259,8 +262,9 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		// Ensure that the resulting SRTCP packet fits into the encrypt buffer.
-		if (*len + SRTP_MAX_TRAILER_LEN > EncryptBufferSize)
+		// Ensure that the resulting SRTCP packet, including its four-byte index,
+		// fits into the encrypt buffer.
+		if (SRTP_MAX_SRTCP_TRAILER_LEN > EncryptBufferSize || *len > EncryptBufferSize - SRTP_MAX_SRTCP_TRAILER_LEN)
 		{
 			MS_WARN_TAG(srtp, "cannot encrypt RTCP packet, size too big (%zu bytes)", *len);
 

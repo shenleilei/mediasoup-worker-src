@@ -46,7 +46,7 @@ public:
 	{
 		return true;
 	};
-	void Restore(uint8_t* /*data*/) override
+	void Restore(uint8_t* /*data*/) noexcept override
 	{
 		return;
 	};

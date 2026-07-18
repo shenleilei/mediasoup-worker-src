@@ -5,20 +5,76 @@
 #include "Logger.hpp"
 #include "MediaSoupErrors.hpp"
 #include "Utils.hpp"
+#include <exception>
+#include <memory>
+#include <new>
+
+#define MS_TRACE_NO_THROW() \
+	do \
+	{ \
+		try \
+		{ \
+			MS_TRACE(); \
+		} \
+		catch (...) \
+		{ \
+		} \
+	} while (false)
+
+#define MS_ERROR_NO_THROW(...) \
+	do \
+	{ \
+		try \
+		{ \
+			MS_ERROR(__VA_ARGS__); \
+		} \
+		catch (...) \
+		{ \
+		} \
+	} while (false)
+
+#define MS_DEBUG_DEV_NO_THROW(...) \
+	do \
+	{ \
+		try \
+		{ \
+			MS_DEBUG_DEV(__VA_ARGS__); \
+		} \
+		catch (...) \
+		{ \
+		} \
+	} while (false)
 
 /* Static. */
 
 static constexpr int ListenBacklog{ 512 };
 
+#ifdef MS_TEST
+thread_local static bool failNextLocalAddressForTesting{ false };
+thread_local static bool throwNextLocalAddressForTesting{ false };
+thread_local static bool failNextConnectionInsertForTesting{ false };
+#endif
+
 /* Static methods for UV callbacks. */
 
-inline static void onConnection(uv_stream_t* handle, int status)
+inline static void onConnection(uv_stream_t* handle, int status) noexcept
 {
 	auto* server = static_cast<TcpServerHandle*>(handle->data);
 
 	if (server)
 	{
-		server->OnUvConnection(status);
+		try
+		{
+			server->OnUvConnection(status);
+		}
+		catch (const std::exception& error)
+		{
+			MS_ERROR_NO_THROW("uncaught TCP server connection callback exception: %s", error.what());
+		}
+		catch (...)
+		{
+			MS_ERROR_NO_THROW("uncaught unknown TCP server connection callback exception");
+		}
 	}
 }
 
@@ -32,32 +88,70 @@ inline static void onCloseTcp(uv_handle_t* handle)
 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 TcpServerHandle::TcpServerHandle(uv_tcp_t* uvHandle) : uvHandle(uvHandle)
 {
-	MS_TRACE();
+	MS_TRACE_NO_THROW();
 
 	int err;
 
 	this->uvHandle->data = static_cast<void*>(this);
 
-	err = uv_listen(
-	  reinterpret_cast<uv_stream_t*>(this->uvHandle),
-	  ListenBacklog,
-	  static_cast<uv_connection_cb>(onConnection));
-
-	if (err != 0)
+	try
 	{
-		uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onCloseTcp));
+		err = uv_listen(
+		  reinterpret_cast<uv_stream_t*>(this->uvHandle),
+		  ListenBacklog,
+		  static_cast<uv_connection_cb>(onConnection));
 
-		MS_THROW_ERROR("uv_listen() failed: %s", uv_strerror(err));
+		if (err != 0)
+		{
+			MS_THROW_ERROR("uv_listen() failed: %s", uv_strerror(err));
+		}
+
+		// Set local address.
+#ifdef MS_TEST
+		if (throwNextLocalAddressForTesting)
+		{
+			throwNextLocalAddressForTesting = false;
+			throw std::bad_alloc();
+		}
+
+		const bool localAddressSet = failNextLocalAddressForTesting
+		                               ? (failNextLocalAddressForTesting = false)
+		                               : SetLocalAddress();
+#else
+		const bool localAddressSet = SetLocalAddress();
+#endif
+		if (!localAddressSet)
+		{
+			MS_THROW_ERROR("error setting local IP and port");
+		}
 	}
-
-	// Set local address.
-	if (!SetLocalAddress())
+	catch (...)
 	{
+		// A constructor exception skips ~TcpServerHandle(). Detach the libuv
+		// callback from the not-fully-constructed object and close the handle here.
+		this->uvHandle->data = nullptr;
 		uv_close(reinterpret_cast<uv_handle_t*>(this->uvHandle), static_cast<uv_close_cb>(onCloseTcp));
 
-		MS_THROW_ERROR("error setting local IP and port");
+		throw;
 	}
 }
+
+#ifdef MS_TEST
+void TcpServerHandle::FailNextLocalAddressForTesting()
+{
+	failNextLocalAddressForTesting = true;
+}
+
+void TcpServerHandle::ThrowNextLocalAddressForTesting()
+{
+	throwNextLocalAddressForTesting = true;
+}
+
+void TcpServerHandle::FailNextConnectionInsertForTesting()
+{
+	failNextConnectionInsertForTesting = true;
+}
+#endif
 
 TcpServerHandle::~TcpServerHandle()
 {
@@ -151,48 +245,70 @@ void TcpServerHandle::SetRecvBufferSize(uint32_t size)
 	}
 }
 
-void TcpServerHandle::AcceptTcpConnection(TcpConnectionHandle* connection)
+void TcpServerHandle::AcceptTcpConnection(TcpConnectionHandle* connection) noexcept
 {
-	MS_TRACE();
+	MS_TRACE_NO_THROW();
 
 	MS_ASSERT(connection != nullptr, "TcpConnectionHandle pointer was not allocated by the user");
+	std::unique_ptr<TcpConnectionHandle> connectionOwner(connection);
 
 	try
 	{
 		connection->Setup(this, &(this->localAddr), this->localIp, this->localPort);
-	}
-	catch (const MediaSoupError& error)
-	{
-		delete connection;
 
-		return;
-	}
+		// Accept the connection.
+		const int err = uv_accept(
+		  reinterpret_cast<uv_stream_t*>(this->uvHandle),
+		  reinterpret_cast<uv_stream_t*>(connection->GetUvHandle()));
 
-	// Accept the connection.
-	const int err = uv_accept(
-	  reinterpret_cast<uv_stream_t*>(this->uvHandle),
-	  reinterpret_cast<uv_stream_t*>(connection->GetUvHandle()));
+		if (err != 0)
+		{
+			MS_ERROR_NO_THROW("uv_accept() failed, dropping TCP connection: %s", uv_strerror(err));
 
-	if (err != 0)
-	{
-		MS_ABORT("uv_accept() failed: %s", uv_strerror(err));
-	}
+			return;
+		}
 
-	// Start receiving data.
-	try
-	{
+		// Start receiving data.
 		// NOTE: This may throw.
 		connection->Start();
+
+#ifdef MS_TEST
+		if (failNextConnectionInsertForTesting)
+		{
+			failNextConnectionInsertForTesting = false;
+			throw std::bad_alloc();
+		}
+#endif
+
+		// Publish the connection only after setup, accept, and read startup all
+		// succeed. Until then the local owner closes every partially initialized
+		// libuv handle on failure.
+		const auto insertResult = this->connections.insert(connection);
+
+		if (!insertResult.second)
+		{
+			// The set already owns this exact pointer. Do not let the local guard
+			// delete the published instance if a buggy caller passes it twice.
+			connectionOwner.release();
+			MS_ERROR_NO_THROW("TCP connection pointer is already owned by the server");
+
+			return;
+		}
+
+		connectionOwner.release();
 	}
 	catch (const MediaSoupError& error)
 	{
-		delete connection;
-
-		return;
+		MS_ERROR_NO_THROW("cannot accept TCP connection: %s", error.what());
 	}
-
-	// Store it.
-	this->connections.insert(connection);
+	catch (const std::exception& error)
+	{
+		MS_ERROR_NO_THROW("cannot accept TCP connection: %s", error.what());
+	}
+	catch (...)
+	{
+		MS_ERROR_NO_THROW("cannot accept TCP connection due to an unknown exception");
+	}
 }
 
 void TcpServerHandle::InternalClose()
@@ -244,9 +360,9 @@ bool TcpServerHandle::SetLocalAddress()
 	return true;
 }
 
-inline void TcpServerHandle::OnUvConnection(int status)
+inline void TcpServerHandle::OnUvConnection(int status) noexcept
 {
-	MS_TRACE();
+	MS_TRACE_NO_THROW();
 
 	if (this->closed)
 	{
@@ -255,27 +371,55 @@ inline void TcpServerHandle::OnUvConnection(int status)
 
 	if (status != 0)
 	{
-		MS_ERROR("error while receiving a new TCP connection: %s", uv_strerror(status));
+		MS_ERROR_NO_THROW("error while receiving a new TCP connection: %s", uv_strerror(status));
 
 		return;
 	}
 
-	// Notify the subclass about a new TCP connection attempt.
-	UserOnTcpConnectionAlloc();
+	// Notify the subclass about a new TCP connection attempt. This method is
+	// called by libuv, so no C++ exception may cross the callback boundary.
+	try
+	{
+		UserOnTcpConnectionAlloc();
+	}
+	catch (const std::exception& error)
+	{
+		MS_ERROR_NO_THROW("TCP connection allocation callback failed: %s", error.what());
+	}
+	catch (...)
+	{
+		MS_ERROR_NO_THROW("TCP connection allocation callback failed with an unknown exception");
+	}
 }
 
-inline void TcpServerHandle::OnTcpConnectionClosed(TcpConnectionHandle* connection)
+inline void TcpServerHandle::OnTcpConnectionClosed(TcpConnectionHandle* connection) noexcept
 {
-	MS_TRACE();
+	MS_TRACE_NO_THROW();
 
-	MS_DEBUG_DEV("TCP connection closed");
+	MS_DEBUG_DEV_NO_THROW("TCP connection closed");
 
-	// Remove the TcpConnectionHandle from the set.
-	this->connections.erase(connection);
+	// Only the set owns published connections. Refuse duplicate or foreign close
+	// notifications instead of risking a second delete.
+	if (this->connections.erase(connection) == 0u)
+	{
+		MS_ERROR_NO_THROW("ignoring close notification for an unowned TCP connection");
+
+		return;
+	}
+
+	std::unique_ptr<TcpConnectionHandle> connectionOwner(connection);
 
 	// Notify the subclass.
-	UserOnTcpConnectionClosed(connection);
-
-	// Delete it.
-	delete connection;
+	try
+	{
+		UserOnTcpConnectionClosed(connection);
+	}
+	catch (const std::exception& error)
+	{
+		MS_ERROR_NO_THROW("TCP connection close callback failed: %s", error.what());
+	}
+	catch (...)
+	{
+		MS_ERROR_NO_THROW("TCP connection close callback failed with an unknown exception");
+	}
 }

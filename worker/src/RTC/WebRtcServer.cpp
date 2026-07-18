@@ -7,6 +7,8 @@
 #include "Settings.hpp"
 #include "Utils.hpp"
 #include <cmath> // std::pow()
+#include <memory>
+#include <new>
 
 namespace RTC
 {
@@ -17,6 +19,12 @@ namespace RTC
 	static constexpr uint16_t IceTypePreference{ 64 };
 	// We do not support non rtcp-mux so component is always 1.
 	static constexpr uint16_t IceComponent{ 1 };
+
+#ifdef MS_TEST
+	WebRtcServer::ConstructionFailurePointForTesting WebRtcServer::constructionFailurePointForTesting{
+	  WebRtcServer::ConstructionFailurePointForTesting::NONE
+	};
+#endif
 
 	static inline uint32_t generateIceCandidatePriority(uint16_t localPreference)
 	{
@@ -52,6 +60,21 @@ namespace RTC
 
 	/* Instance methods. */
 
+#ifdef MS_TEST
+	void WebRtcServer::MaybeFailConstructionForTesting(
+	  ConstructionFailurePointForTesting failurePoint)
+	{
+		if (constructionFailurePointForTesting != failurePoint)
+		{
+			return;
+		}
+
+		constructionFailurePointForTesting = ConstructionFailurePointForTesting::NONE;
+
+		throw std::bad_alloc();
+	}
+#endif
+
 	WebRtcServer::WebRtcServer(
 	  RTC::Shared* shared,
 	  const std::string& id,
@@ -71,6 +94,11 @@ namespace RTC
 
 		try
 		{
+			// Reserve before creating any listening handle. Once this succeeds, publishing
+			// a handle into the vector is allocation-free and ownership can be transferred
+			// with a single non-throwing release().
+			this->udpSocketOrTcpServers.reserve(listenInfos->size());
+
 			for (const auto* listenInfo : *listenInfos)
 			{
 				auto ip = listenInfo->ip()->str();
@@ -92,14 +120,13 @@ namespace RTC
 
 				if (listenInfo->protocol() == FBS::Transport::Protocol::UDP)
 				{
-					// This may throw.
-					RTC::UdpSocket* udpSocket;
+					std::unique_ptr<RTC::UdpSocket> udpSocket;
 
 					if (listenInfo->portRange()->min() != 0 && listenInfo->portRange()->max() != 0)
 					{
 						uint64_t portRangeHash{ 0u };
 
-						udpSocket = new RTC::UdpSocket(
+						udpSocket = std::make_unique<RTC::UdpSocket>(
 						  this,
 						  ip,
 						  listenInfo->portRange()->min(),
@@ -109,17 +136,16 @@ namespace RTC
 					}
 					else if (listenInfo->port() != 0)
 					{
-						udpSocket = new RTC::UdpSocket(this, ip, listenInfo->port(), flags);
+						udpSocket = std::make_unique<RTC::UdpSocket>(this, ip, listenInfo->port(), flags);
 					}
 					// NOTE: This is temporal to allow deprecated usage of worker rtcPort.
 					// In the future this should throw since |port| or |portRange| will be
 					// required.
 					else
 					{
-						udpSocket = new RTC::UdpSocket(this, ip, Settings::configuration.rtcPort, flags);
+						udpSocket =
+						  std::make_unique<RTC::UdpSocket>(this, ip, Settings::configuration.rtcPort, flags);
 					}
-
-					this->udpSocketOrTcpServers.emplace_back(udpSocket, nullptr, announcedAddress);
 
 					if (listenInfo->sendBufferSize() != 0)
 					{
@@ -136,17 +162,30 @@ namespace RTC
 					  "UDP socket send buffer size: %d, recv buffer size: %d",
 					  udpSocket->GetSendBufferSize(),
 					  udpSocket->GetRecvBufferSize());
+
+#ifdef MS_TEST
+					MaybeFailConstructionForTesting(
+					  ConstructionFailurePointForTesting::BEFORE_SOCKET_PUBLICATION);
+#endif
+
+					this->udpSocketOrTcpServers.emplace_back(
+					  udpSocket.get(), nullptr, std::move(announcedAddress));
+					udpSocket.release();
+
+#ifdef MS_TEST
+					MaybeFailConstructionForTesting(
+					  ConstructionFailurePointForTesting::AFTER_SOCKET_PUBLICATION);
+#endif
 				}
 				else if (listenInfo->protocol() == FBS::Transport::Protocol::TCP)
 				{
-					// This may throw.
-					RTC::TcpServer* tcpServer;
+					std::unique_ptr<RTC::TcpServer> tcpServer;
 
 					if (listenInfo->portRange()->min() != 0 && listenInfo->portRange()->max() != 0)
 					{
 						uint64_t portRangeHash{ 0u };
 
-						tcpServer = new RTC::TcpServer(
+						tcpServer = std::make_unique<RTC::TcpServer>(
 						  this,
 						  this,
 						  ip,
@@ -157,18 +196,17 @@ namespace RTC
 					}
 					else if (listenInfo->port() != 0)
 					{
-						tcpServer = new RTC::TcpServer(this, this, ip, listenInfo->port(), flags);
+						tcpServer =
+						  std::make_unique<RTC::TcpServer>(this, this, ip, listenInfo->port(), flags);
 					}
 					// NOTE: This is temporal to allow deprecated usage of worker rtcPort.
 					// In the future this should throw since |port| or |portRange| will be
 					// required.
 					else
 					{
-						tcpServer =
-						  new RTC::TcpServer(this, this, ip, Settings::configuration.rtcPort, flags);
+						tcpServer = std::make_unique<RTC::TcpServer>(
+						  this, this, ip, Settings::configuration.rtcPort, flags);
 					}
-
-					this->udpSocketOrTcpServers.emplace_back(nullptr, tcpServer, announcedAddress);
 
 					if (listenInfo->sendBufferSize() != 0)
 					{
@@ -185,6 +223,20 @@ namespace RTC
 					  "TCP server send buffer size: %d, recv buffer size: %d",
 					  tcpServer->GetSendBufferSize(),
 					  tcpServer->GetRecvBufferSize());
+
+#ifdef MS_TEST
+					MaybeFailConstructionForTesting(
+					  ConstructionFailurePointForTesting::BEFORE_SOCKET_PUBLICATION);
+#endif
+
+					this->udpSocketOrTcpServers.emplace_back(
+					  nullptr, tcpServer.get(), std::move(announcedAddress));
+					tcpServer.release();
+
+#ifdef MS_TEST
+					MaybeFailConstructionForTesting(
+					  ConstructionFailurePointForTesting::AFTER_SOCKET_PUBLICATION);
+#endif
 				}
 			}
 
@@ -194,7 +246,7 @@ namespace RTC
 			  /*channelRequestHandler*/ this,
 			  /*channelNotificationHandler*/ nullptr);
 		}
-		catch (const MediaSoupError& error)
+		catch (...)
 		{
 			// Must delete everything since the destructor won't be called.
 

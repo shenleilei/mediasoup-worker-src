@@ -23,6 +23,12 @@ type TestContext = {
 	dataConsumer?: mediasoup.types.DataConsumer;
 };
 
+const TEST_UDP_LISTEN_INFO = {
+	protocol: 'udp' as const,
+	ip: '127.0.0.1',
+	portRange: { min: 2000, max: 3000 },
+};
+
 const ctx: TestContext = {
 	mediaCodecs: utils.deepFreeze<mediasoup.types.RtpCodecCapability[]>([
 		{
@@ -171,8 +177,21 @@ const ctx: TestContext = {
 };
 
 beforeEach(async () => {
-	ctx.worker1 = await mediasoup.createWorker();
-	ctx.worker2 = await mediasoup.createWorker();
+	const worker1RtcPort = await pickPort({
+		type: 'udp',
+		ip: '127.0.0.1',
+		minPort: 30000,
+		maxPort: 39999,
+	});
+	const worker2RtcPort = await pickPort({
+		type: 'udp',
+		ip: '127.0.0.1',
+		minPort: 30000,
+		maxPort: 39999,
+	});
+
+	ctx.worker1 = await mediasoup.createWorker({ rtcPort: worker1RtcPort });
+	ctx.worker2 = await mediasoup.createWorker({ rtcPort: worker2RtcPort });
 	ctx.router1 = await ctx.worker1.createRouter({
 		mediaCodecs: ctx.mediaCodecs,
 	});
@@ -180,11 +199,11 @@ beforeEach(async () => {
 		mediaCodecs: ctx.mediaCodecs,
 	});
 	ctx.webRtcTransport1 = await ctx.router1.createWebRtcTransport({
-		listenInfos: [{ protocol: 'udp', ip: '127.0.0.1' }],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 		enableSctp: true,
 	});
 	ctx.webRtcTransport2 = await ctx.router2.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 		enableSctp: true,
 	});
 	ctx.audioProducer = await ctx.webRtcTransport1.produce(
@@ -978,10 +997,10 @@ test('router.pipeToRouter() called twice generates a single PipeTransport pair',
 		mediaCodecs: ctx.mediaCodecs,
 	});
 	const transportA1 = await routerA.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 	});
 	const transportA2 = await routerA.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 	});
 	const audioProducerA1 = await transportA1.produce(ctx.audioProducerOptions);
 	const audioProducerA2 = await transportA2.produce(ctx.audioProducerOptions);
@@ -1019,10 +1038,10 @@ test('router.pipeToRouter() called in two Routers passing one to each other as a
 		mediaCodecs: ctx.mediaCodecs,
 	});
 	const transportA = await routerA.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 	});
 	const transportB = await routerB.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 	});
 	const audioProducerA = await transportA.produce(ctx.audioProducerOptions);
 	const audioProducerB = await transportB.produce(ctx.audioProducerOptions);

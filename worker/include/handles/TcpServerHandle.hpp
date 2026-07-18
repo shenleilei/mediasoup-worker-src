@@ -43,8 +43,14 @@ public:
 	uint32_t GetRecvBufferSize() const;
 	void SetRecvBufferSize(uint32_t size);
 
+#ifdef MS_TEST
+	static void FailNextLocalAddressForTesting();
+	static void ThrowNextLocalAddressForTesting();
+	static void FailNextConnectionInsertForTesting();
+#endif
+
 protected:
-	void AcceptTcpConnection(TcpConnectionHandle* connection);
+	void AcceptTcpConnection(TcpConnectionHandle* connection) noexcept;
 
 private:
 	void InternalClose();
@@ -57,11 +63,11 @@ protected:
 
 	/* Callbacks fired by UV events. */
 public:
-	void OnUvConnection(int status);
+	void OnUvConnection(int status) noexcept;
 
 	/* Methods inherited from TcpConnectionHandle::Listener. */
 public:
-	void OnTcpConnectionClosed(TcpConnectionHandle* connection) override;
+	void OnTcpConnectionClosed(TcpConnectionHandle* connection) noexcept override;
 
 protected:
 	struct sockaddr_storage localAddr

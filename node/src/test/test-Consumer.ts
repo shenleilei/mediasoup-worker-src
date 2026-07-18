@@ -232,10 +232,22 @@ beforeEach(async () => {
 	ctx.worker = await mediasoup.createWorker();
 	ctx.router = await ctx.worker.createRouter({ mediaCodecs: ctx.mediaCodecs });
 	ctx.webRtcTransport1 = await ctx.router.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [
+			{
+				protocol: 'udp',
+				ip: '127.0.0.1',
+				portRange: { min: 40000, max: 49999 },
+			},
+		],
 	});
 	ctx.webRtcTransport2 = await ctx.router.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [
+			{
+				protocol: 'udp',
+				ip: '127.0.0.1',
+				portRange: { min: 40000, max: 49999 },
+			},
+		],
 	});
 	ctx.audioProducer = await ctx.webRtcTransport1.produce(
 		ctx.audioProducerOptions
@@ -546,6 +558,50 @@ test('transport.consume() can be created with user provided mid', async () => {
 	);
 	expect(Number(audioConsumer1.rtpParameters.mid) + 1).toBe(
 		Number(audioConsumer3.rtpParameters.mid)
+	);
+}, 2000);
+
+test('transport.consume() validates mid limits using UTF-8 byte length', async () => {
+	const layeredMidAtLimit = '😀😀';
+	const simpleMidAtLimit = '界'.repeat(85);
+
+	expect(Buffer.byteLength(layeredMidAtLimit, 'utf8')).toBe(8);
+	expect(Buffer.byteLength(simpleMidAtLimit, 'utf8')).toBe(255);
+
+	const layeredConsumer = await ctx.webRtcTransport2!.consume({
+		producerId: ctx.videoProducer!.id,
+		mid: layeredMidAtLimit,
+		rtpCapabilities: ctx.consumerDeviceCapabilities,
+	});
+
+	expect(layeredConsumer.type).toBe('simulcast');
+	expect(layeredConsumer.rtpParameters.mid).toBe(layeredMidAtLimit);
+
+	const simpleConsumer = await ctx.webRtcTransport2!.consume({
+		producerId: ctx.audioProducer!.id,
+		mid: simpleMidAtLimit,
+		rtpCapabilities: ctx.consumerDeviceCapabilities,
+	});
+
+	expect(simpleConsumer.type).toBe('simple');
+	expect(simpleConsumer.rtpParameters.mid).toBe(simpleMidAtLimit);
+
+	await expect(
+		ctx.webRtcTransport2!.consume({
+			producerId: ctx.videoProducer!.id,
+			mid: `${layeredMidAtLimit}a`,
+			rtpCapabilities: ctx.consumerDeviceCapabilities,
+		})
+	).rejects.toThrow('simulcast Consumer mid cannot exceed 8 bytes');
+
+	await expect(
+		ctx.webRtcTransport2!.consume({
+			producerId: ctx.audioProducer!.id,
+			mid: `${simpleMidAtLimit}a`,
+			rtpCapabilities: ctx.consumerDeviceCapabilities,
+		})
+	).rejects.toThrow(
+		'mid exceeds the maximum RTP extension length of 255 bytes'
 	);
 }, 2000);
 

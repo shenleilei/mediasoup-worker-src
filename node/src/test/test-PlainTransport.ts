@@ -6,6 +6,11 @@ import { WorkerEvents, PlainTransportEvents } from '../types';
 import * as utils from '../utils';
 
 const IS_WINDOWS = os.platform() === 'win32';
+const TEST_UDP_LISTEN_INFO = {
+	protocol: 'udp' as const,
+	ip: '127.0.0.1',
+	portRange: { min: 2000, max: 3000 },
+};
 
 type TestContext = {
 	mediaCodecs: mediasoup.types.RtpCodecCapability[];
@@ -125,7 +130,7 @@ test('router.createPlainTransport() succeeds', async () => {
 	expect(plainTransport2.closed).toBe(true);
 
 	const anotherTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
 	});
 
 	expect(typeof anotherTransport).toBe('object');
@@ -213,7 +218,7 @@ test('router.createPlainTransport() with wrong arguments rejects with TypeError'
 test('router.createPlainTransport() with enableSrtp succeeds', async () => {
 	// Use default cryptoSuite: 'AES_CM_128_HMAC_SHA1_80'.
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
 		enableSrtp: true,
 	});
 
@@ -395,7 +400,7 @@ if (!IS_WINDOWS) {
 
 test('plainTransport.getStats() succeeds', async () => {
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
 	});
 
 	const stats = await plainTransport.getStats();
@@ -430,7 +435,8 @@ test('plainTransport.getStats() succeeds', async () => {
 
 test('plainTransport.connect() succeeds', async () => {
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
+		rtcpListenInfo: TEST_UDP_LISTEN_INFO,
 		rtcpMux: false,
 	});
 
@@ -453,7 +459,8 @@ test('plainTransport.connect() succeeds', async () => {
 
 test('plainTransport.connect() with wrong arguments rejects with TypeError', async () => {
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
+		rtcpListenInfo: TEST_UDP_LISTEN_INFO,
 		rtcpMux: false,
 	});
 
@@ -499,7 +506,7 @@ test('plainTransport.connect() with wrong arguments rejects with TypeError', asy
 
 test('PlainTransport methods reject if closed', async () => {
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
 	});
 
 	const onObserverClose = jest.fn();
@@ -532,7 +539,7 @@ test('router.createPlainTransport() with fixed port succeeds', async () => {
 
 test('PlainTransport emits "routerclose" if Router is closed', async () => {
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
 	});
 
 	const onObserverClose = jest.fn();
@@ -553,7 +560,7 @@ test('PlainTransport emits "routerclose" if Router is closed', async () => {
 
 test('PlainTransport emits "routerclose" if Worker is closed', async () => {
 	const plainTransport = await ctx.router!.createPlainTransport({
-		listenIp: '127.0.0.1',
+		listenInfo: TEST_UDP_LISTEN_INFO,
 	});
 
 	const onObserverClose = jest.fn();

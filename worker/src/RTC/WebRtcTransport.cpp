@@ -991,7 +991,7 @@ namespace RTC
 		// Decrypt the SRTP packet.
 		if (!this->srtpRecvSession->DecryptSrtp(const_cast<uint8_t*>(data), &len))
 		{
-			RTC::RtpPacket* packet = RTC::RtpPacket::Parse(data, len);
+			RTC::RtpPacket* packet = RTC::RtpPacket::Parse(data, len, RTC::MaxPacketBufferSize);
 
 			if (!packet)
 			{
@@ -1012,7 +1012,7 @@ namespace RTC
 			return;
 		}
 
-		RTC::RtpPacket* packet = RTC::RtpPacket::Parse(data, len);
+		RTC::RtpPacket* packet = RTC::RtpPacket::Parse(data, len, RTC::MaxPacketBufferSize);
 
 		if (!packet)
 		{

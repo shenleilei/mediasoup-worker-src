@@ -622,9 +622,11 @@ namespace RTC
 		return desiredBitrate;
 	}
 
-	void SvcConsumer::SendRtpPacket(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket)
+	void SvcConsumer::SendRtpPacket(
+	  RTC::RtpPacket* packet, RTC::Consumer::RtpPacketFanoutContext& /*fanoutContext*/)
 	{
 		MS_TRACE();
+		RTC::Consumer::RtpPacketMutationGuard packetGuard(packet, true);
 
 #ifdef MS_RTC_LOGGER_RTP
 		packet->logger.consumerId = this->id;
@@ -699,7 +701,6 @@ namespace RTC
 		auto previousTemporalLayer = this->encodingContext->GetCurrentTemporalLayer();
 
 		bool marker{ false };
-		const bool origMarker = packet->HasMarker();
 
 		if (!packet->ProcessPayload(this->encodingContext.get(), marker))
 		{
@@ -759,7 +760,10 @@ namespace RTC
 		}
 
 		// Process the packet.
-		if (this->rtpStream->ReceivePacket(packet, sharedPacket))
+		// SVC codec processing is consumer-specific. Its retransmission clone must
+		// never be shared with another consumer in either fanout order.
+		std::shared_ptr<RTC::RtpPacket> retransmissionPacket;
+		if (this->rtpStream->ReceivePacket(packet, retransmissionPacket))
 		{
 			// Send the packet.
 			this->listener->OnConsumerSendRtpPacket(this, packet);
@@ -780,13 +784,6 @@ namespace RTC
 			  origSeq);
 		}
 
-		// Restore packet fields.
-		packet->SetSsrc(origSsrc);
-		packet->SetSequenceNumber(origSeq);
-		packet->SetMarker(origMarker);
-
-		// Restore the original payload if needed.
-		packet->RestorePayload();
 	}
 
 	bool SvcConsumer::GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs)

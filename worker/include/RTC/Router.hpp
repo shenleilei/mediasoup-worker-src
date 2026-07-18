@@ -78,6 +78,11 @@ namespace RTC
 		  bool first) override;
 		void OnTransportProducerRtpPacketReceived(
 		  RTC::Transport* transport, RTC::Producer* producer, RTC::RtpPacket* packet) override;
+	#ifdef MS_TEST
+		void SendRtpPacketToConsumersForTesting(
+		  RTC::RtpPacket* packet,
+		  const std::vector<RTC::Consumer*>& consumers);
+	#endif
 		void OnTransportNeedWorstRemoteFractionLost(
 		  RTC::Transport* transport,
 		  RTC::Producer* producer,

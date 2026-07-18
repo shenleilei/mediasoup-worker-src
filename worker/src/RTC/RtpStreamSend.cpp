@@ -130,6 +130,19 @@ namespace RTC
 #ifdef MS_LIBURING_SUPPORTED
 		// Activate liburing usage.
 		DepLibUring::SetActive();
+		struct SubmitGuard
+		{
+			~SubmitGuard() noexcept
+			{
+				try
+				{
+					DepLibUring::Submit();
+				}
+				catch (...)
+				{
+				}
+			}
+		} submitGuard;
 #endif
 
 		for (auto it = nackPacket->Begin(); it != nackPacket->End(); ++it)
@@ -138,9 +151,42 @@ namespace RTC
 
 			this->nackPacketCount += item->CountRequestedPackets();
 
-			FillRetransmissionContainer(item->GetPacketId(), item->GetLostPacketBitmask());
+				FillRetransmissionContainer(item->GetPacketId(), item->GetLostPacketBitmask());
+				struct RtxRestoreGuard
+				{
+					RtxRestoreGuard(bool enabled, uint8_t payloadType) noexcept
+					  : enabled(enabled), payloadType(payloadType)
+					{
+					}
 
-			for (auto* item : RetransmissionContainer)
+					~RtxRestoreGuard() noexcept
+					{
+						if (!this->enabled)
+						{
+							return;
+						}
+
+						for (auto* retransmissionItem : RetransmissionContainer)
+						{
+							if (!retransmissionItem)
+							{
+								break;
+							}
+
+							if (
+							  !retransmissionItem->packet->RtxDecode(
+							    this->payloadType, retransmissionItem->ssrc))
+							{
+								MS_ERROR("failed to restore RTX retransmission packet");
+							}
+						}
+					}
+
+					bool enabled{ false };
+					uint8_t payloadType{ 0u };
+				} rtxRestoreGuard(HasRtx(), RtpStream::GetPayloadType());
+
+				for (auto* item : RetransmissionContainer)
 			{
 				if (!item)
 				{
@@ -164,18 +210,8 @@ namespace RTC
 					RTC::RtpStream::PacketRepaired(packet.get());
 				}
 
-				if (HasRtx())
-				{
-					// Restore the packet.
-					packet->RtxDecode(RtpStream::GetPayloadType(), item->ssrc);
 				}
 			}
-		}
-
-#ifdef MS_LIBURING_SUPPORTED
-		// Submit all prepared submission entries.
-		DepLibUring::Submit();
-#endif
 	}
 
 	void RtpStreamSend::ReceiveKeyFrameRequest(RTC::RTCP::FeedbackPs::MessageType messageType)
@@ -443,9 +479,11 @@ namespace RTC
 					packet->SetTimestamp(item->timestamp);
 
 					// Update MID RTP extension value.
-					if (!this->mid.empty())
+					if (!this->mid.empty() && !packet->UpdateMid(mid))
 					{
-						packet->UpdateMid(mid);
+						MS_WARN_TAG(rtx, "cannot rewrite MID for retransmission [seq:%" PRIu16 "]", currentSeq);
+						item = nullptr;
+						packet.reset();
 					}
 				}
 
@@ -472,29 +510,41 @@ namespace RTC
 				// Stored packet is valid for retransmission. Resend it.
 				else
 				{
+					bool canSend{ true };
+
 					// If we use RTX and the packet has not yet been resent, encode it now.
 					if (HasRtx())
 					{
-						// Increment RTX seq.
-						++this->rtxSeq;
-
-						packet->RtxEncode(this->params.rtxPayloadType, this->params.rtxSsrc, this->rtxSeq);
+						const uint16_t nextRtxSeq = this->rtxSeq + 1u;
+						if (!packet->RtxEncode(this->params.rtxPayloadType, this->params.rtxSsrc, nextRtxSeq))
+						{
+							MS_WARN_TAG(
+							  rtx, "cannot expand packet for RTX retransmission [seq:%" PRIu16 "]", currentSeq);
+							canSend = false;
+						}
+						else
+						{
+							this->rtxSeq = nextRtxSeq;
+						}
 					}
 
-					// Save when this packet was resent.
-					item->resentAtMs = nowMs;
-
-					// Increase the number of times this packet was sent.
-					item->sentTimes++;
-
-					// Store the item in the container and then increment its index.
-					RetransmissionContainer[containerIdx++] = item;
-
-					sent = true;
-
-					if (isFirstPacket)
+					if (canSend)
 					{
-						firstPacketSent = true;
+						// Save when this packet was resent.
+						item->resentAtMs = nowMs;
+
+						// Increase the number of times this packet was sent.
+						item->sentTimes++;
+
+						// Store the item in the container and then increment its index.
+						RetransmissionContainer[containerIdx++] = item;
+
+						sent = true;
+
+						if (isFirstPacket)
+						{
+							firstPacketSent = true;
+						}
 					}
 				}
 			}

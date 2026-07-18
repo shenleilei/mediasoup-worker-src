@@ -54,7 +54,9 @@ export type ConsumerOptions<ConsumerAppData extends AppData = AppData> = {
 
 	/**
 	 * The MID for the Consumer. If not specified, a sequentially growing
-	 * number will be assigned.
+	 * number will be assigned. Simple Consumers support at most 255 UTF-8 bytes;
+	 * simulcast and SVC Consumers support at most 8 UTF-8 bytes. Ignored for pipe
+	 * Consumers.
 	 */
 	mid?: string;
 

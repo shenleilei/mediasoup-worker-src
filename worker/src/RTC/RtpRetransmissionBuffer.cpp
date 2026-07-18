@@ -4,6 +4,39 @@
 #include "RTC/RtpRetransmissionBuffer.hpp"
 #include "Logger.hpp"
 #include "RTC/SeqManager.hpp"
+#include <memory>
+
+#ifdef MS_TEST
+namespace
+{
+	thread_local bool failNextItemPublicationForTesting{ false };
+	thread_local size_t failNextBlankSlotPublicationForTesting{ 0u };
+
+	void MaybeFailItemPublicationForTesting()
+	{
+		if (!failNextItemPublicationForTesting)
+		{
+			return;
+		}
+
+		failNextItemPublicationForTesting = false;
+		throw std::bad_alloc();
+	}
+
+	void MaybeFailBlankSlotPublicationForTesting(size_t publishedSlots)
+	{
+		if (
+		  failNextBlankSlotPublicationForTesting == 0u ||
+		  publishedSlots < failNextBlankSlotPublicationForTesting)
+		{
+			return;
+		}
+
+		failNextBlankSlotPublicationForTesting = 0u;
+		throw std::bad_alloc();
+	}
+}
+#endif
 
 namespace RTC
 {
@@ -105,9 +138,13 @@ namespace RTC
 		{
 			MS_DEBUG_DEV("buffer empty [seq:%" PRIu16 ", timestamp:%" PRIu32 "]", seq, timestamp);
 
-			auto* item = new Item();
-
-			this->buffer.push_back(RtpRetransmissionBuffer::FillItem(item, packet, sharedPacket));
+			auto item = std::make_unique<Item>();
+			RtpRetransmissionBuffer::FillItem(item.get(), packet, sharedPacket);
+#ifdef MS_TEST
+			MaybeFailItemPublicationForTesting();
+#endif
+			this->buffer.push_back(item.get());
+			item.release();
 
 			return;
 		}
@@ -131,9 +168,13 @@ namespace RTC
 
 			Clear();
 
-			auto* item = new Item();
-
-			this->buffer.push_back(RtpRetransmissionBuffer::FillItem(item, packet, sharedPacket));
+			auto item = std::make_unique<Item>();
+			RtpRetransmissionBuffer::FillItem(item.get(), packet, sharedPacket);
+#ifdef MS_TEST
+			MaybeFailItemPublicationForTesting();
+#endif
+			this->buffer.push_back(item.get());
+			item.release();
 
 			return;
 		}
@@ -161,9 +202,13 @@ namespace RTC
 				  seq,
 				  timestamp);
 
-				auto* item = new Item();
-
-				this->buffer.push_back(RtpRetransmissionBuffer::FillItem(item, packet, sharedPacket));
+				auto item = std::make_unique<Item>();
+				RtpRetransmissionBuffer::FillItem(item.get(), packet, sharedPacket);
+#ifdef MS_TEST
+				MaybeFailItemPublicationForTesting();
+#endif
+				this->buffer.push_back(item.get());
+				item.release();
 
 				return;
 			}
@@ -236,16 +281,37 @@ namespace RTC
 				}
 			}
 
-			// Push blank slots to the back.
-			for (uint16_t i{ 0u }; i < numBlankSlots; ++i)
+			// Fully construct the item before modifying the deque. If any blank-slot
+			// or final pointer publication throws, remove only the gap introduced by
+			// this attempt so GetNewest() can never observe a null tail.
+			auto item = std::make_unique<Item>();
+			RtpRetransmissionBuffer::FillItem(item.get(), packet, sharedPacket);
+			size_t publishedBlankSlots{ 0u };
+			try
 			{
-				this->buffer.push_back(nullptr);
+				for (uint16_t i{ 0u }; i < numBlankSlots; ++i)
+				{
+					this->buffer.push_back(nullptr);
+					++publishedBlankSlots;
+#ifdef MS_TEST
+					MaybeFailBlankSlotPublicationForTesting(publishedBlankSlots);
+#endif
+				}
+#ifdef MS_TEST
+				MaybeFailItemPublicationForTesting();
+#endif
+				this->buffer.push_back(item.get());
+				item.release();
 			}
-
-			// Push the packet, which becomes the newest one in the buffer.
-			auto* item = new Item();
-
-			this->buffer.push_back(RtpRetransmissionBuffer::FillItem(item, packet, sharedPacket));
+			catch (...)
+			{
+				while (publishedBlankSlots != 0u)
+				{
+					this->buffer.pop_back();
+					--publishedBlankSlots;
+				}
+				throw;
+			}
 		}
 		// Packet arrived out order and its seq is less than seq of the oldest
 		// stored packet, so will become the oldest one in the buffer.
@@ -302,16 +368,34 @@ namespace RTC
 				return;
 			}
 
-			// Push blank slots to the front.
-			for (uint16_t i{ 0u }; i < numBlankSlots; ++i)
+			auto item = std::make_unique<Item>();
+			RtpRetransmissionBuffer::FillItem(item.get(), packet, sharedPacket);
+			size_t publishedBlankSlots{ 0u };
+			try
 			{
-				this->buffer.push_front(nullptr);
+				for (uint16_t i{ 0u }; i < numBlankSlots; ++i)
+				{
+					this->buffer.push_front(nullptr);
+					++publishedBlankSlots;
+#ifdef MS_TEST
+					MaybeFailBlankSlotPublicationForTesting(publishedBlankSlots);
+#endif
+				}
+#ifdef MS_TEST
+				MaybeFailItemPublicationForTesting();
+#endif
+				this->buffer.push_front(item.get());
+				item.release();
 			}
-
-			// Insert the packet, which becomes the oldest one in the buffer.
-			auto* item = new Item();
-
-			this->buffer.push_front(RtpRetransmissionBuffer::FillItem(item, packet, sharedPacket));
+			catch (...)
+			{
+				while (publishedBlankSlots != 0u)
+				{
+					this->buffer.pop_front();
+					--publishedBlankSlots;
+				}
+				throw;
+			}
 		}
 		// Otherwise packet must be inserted between oldest and newest stored items
 		// so there is already an allocated slot for it.
@@ -403,9 +487,13 @@ namespace RTC
 			}
 
 			// Store the packet.
-			item = new Item();
-
-			this->buffer[idx] = RtpRetransmissionBuffer::FillItem(item, packet, sharedPacket);
+			auto ownedItem = std::make_unique<Item>();
+			RtpRetransmissionBuffer::FillItem(ownedItem.get(), packet, sharedPacket);
+#ifdef MS_TEST
+			MaybeFailItemPublicationForTesting();
+#endif
+			this->buffer[idx] = ownedItem.get();
+			ownedItem.release();
 		}
 
 		MS_ASSERT(
@@ -414,6 +502,19 @@ namespace RTC
 		  this->buffer.size(),
 		  this->maxItems);
 	}
+
+#ifdef MS_TEST
+	void RtpRetransmissionBuffer::FailNextItemPublicationForTesting()
+	{
+		failNextItemPublicationForTesting = true;
+	}
+
+	void RtpRetransmissionBuffer::FailNextBlankSlotPublicationForTesting(
+	  size_t afterPublishedSlots)
+	{
+		failNextBlankSlotPublicationForTesting = std::max<size_t>(1u, afterPublishedSlots);
+	}
+#endif
 
 	void RtpRetransmissionBuffer::Clear()
 	{

@@ -3,6 +3,7 @@
 #include "RTC/Codecs/H264_SVC.hpp"
 #include "Logger.hpp"
 #include "Utils.hpp"
+#include <memory>
 
 namespace RTC
 {
@@ -252,17 +253,19 @@ namespace RTC
 			// Read frame-marking.
 			packet->ReadFrameMarking(&frameMarking, frameMarkingLen);
 
-			PayloadDescriptor* payloadDescriptor =
-			  H264_SVC::Parse(data, len, frameMarking, frameMarkingLen);
+			auto payloadDescriptor =
+			  std::unique_ptr<PayloadDescriptor>(H264_SVC::Parse(data, len, frameMarking, frameMarkingLen));
 
 			if (!payloadDescriptor)
 			{
 				return;
 			}
 
-			auto* payloadDescriptorHandler = new PayloadDescriptorHandler(payloadDescriptor);
+			auto payloadDescriptorHandler =
+			  std::make_shared<PayloadDescriptorHandler>(payloadDescriptor.get());
+			payloadDescriptor.release();
 
-			packet->SetPayloadDescriptorHandler(payloadDescriptorHandler);
+			packet->SetPayloadDescriptorHandler(std::move(payloadDescriptorHandler));
 		}
 
 		/* Instance methods. */
@@ -470,7 +473,7 @@ namespace RTC
 			return true;
 		}
 
-		void H264_SVC::PayloadDescriptorHandler::Restore(uint8_t* /*data*/)
+		void H264_SVC::PayloadDescriptorHandler::Restore(uint8_t* /*data*/) noexcept
 		{
 			MS_TRACE();
 		}

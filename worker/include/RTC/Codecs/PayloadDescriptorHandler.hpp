@@ -104,7 +104,7 @@ namespace RTC
 		public:
 			virtual void Dump() const                                                                = 0;
 			virtual bool Process(RTC::Codecs::EncodingContext* context, uint8_t* data, bool& marker) = 0;
-			virtual void Restore(uint8_t* data)                                                      = 0;
+			virtual void Restore(uint8_t* data) noexcept                                             = 0;
 			virtual uint8_t GetSpatialLayer() const                                                  = 0;
 			virtual uint8_t GetTemporalLayer() const                                                 = 0;
 			virtual bool IsKeyFrame() const                                                          = 0;

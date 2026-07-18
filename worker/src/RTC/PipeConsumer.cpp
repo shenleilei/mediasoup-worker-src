@@ -216,9 +216,11 @@ namespace RTC
 		return 0u;
 	}
 
-	void PipeConsumer::SendRtpPacket(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket)
+	void PipeConsumer::SendRtpPacket(
+	  RTC::RtpPacket* packet, RTC::Consumer::RtpPacketFanoutContext& fanoutContext)
 	{
 		MS_TRACE();
+		RTC::Consumer::RtpPacketMutationGuard packetGuard(packet);
 
 #ifdef MS_RTC_LOGGER_RTP
 		packet->logger.consumerId = this->id;
@@ -346,8 +348,11 @@ namespace RTC
 			  origSeq);
 		}
 
-		// Process the packet.
-		if (rtpStream->ReceivePacket(packet, sharedPacket))
+		// PipeConsumers preserve extension layout and payload, so one lazy clone can
+		// be shared within this fanout. Each retransmission item stores its own SSRC,
+		// sequence number and timestamp and restores them before the send callback.
+		// Keep this profile separate from Simple/other consumer packet variants.
+		if (rtpStream->ReceivePacket(packet, fanoutContext.pipePacket))
 		{
 			// Send the packet.
 			this->listener->OnConsumerSendRtpPacket(this, packet);
@@ -368,9 +373,6 @@ namespace RTC
 			  origSeq);
 		}
 
-		// Restore packet fields.
-		packet->SetSsrc(origSsrc);
-		packet->SetSequenceNumber(origSeq);
 	}
 
 	bool PipeConsumer::GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs)

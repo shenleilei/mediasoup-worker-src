@@ -44,6 +44,10 @@ namespace RTC
 		void Insert(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket);
 		void Clear();
 		void Dump() const;
+	#ifdef MS_TEST
+		static void FailNextItemPublicationForTesting();
+		static void FailNextBlankSlotPublicationForTesting(size_t afterPublishedSlots);
+	#endif
 
 	private:
 		Item* GetOldest() const;

@@ -34,5 +34,7 @@
 ## Others.
 /coverage
 /.cache
+__pycache__/
+*.pyc
 # Packaged module.
 *.tgz

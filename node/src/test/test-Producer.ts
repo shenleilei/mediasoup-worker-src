@@ -21,6 +21,12 @@ type TestContext = {
 	webRtcTransport2?: mediasoup.types.WebRtcTransport;
 };
 
+const TEST_UDP_LISTEN_INFO = {
+	protocol: 'udp' as const,
+	ip: '127.0.0.1',
+	portRange: { min: 2000, max: 3000 },
+};
+
 const ctx: TestContext = {
 	mediaCodecs: utils.deepFreeze<mediasoup.types.RtpCodecCapability[]>([
 		{
@@ -139,10 +145,10 @@ beforeEach(async () => {
 	ctx.worker = await mediasoup.createWorker();
 	ctx.router = await ctx.worker.createRouter({ mediaCodecs: ctx.mediaCodecs });
 	ctx.webRtcTransport1 = await ctx.router.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 	});
 	ctx.webRtcTransport2 = await ctx.router.createWebRtcTransport({
-		listenIps: ['127.0.0.1'],
+		listenInfos: [TEST_UDP_LISTEN_INFO],
 	});
 });
 

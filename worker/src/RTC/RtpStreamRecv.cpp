@@ -5,6 +5,7 @@
 #include "Logger.hpp"
 #include "Utils.hpp"
 #include "RTC/Codecs/Tools.hpp"
+#include <new>
 
 namespace RTC
 {
@@ -246,8 +247,9 @@ namespace RTC
 				{
 					auto layer = std::to_string(sIdx) + "." + std::to_string(tIdx);
 
-					bitrateByLayer.emplace_back(FBS::RtpStream::CreateBitrateByLayerDirect(
-					  builder, layer.c_str(), GetBitrate(nowMs, sIdx, tIdx)));
+					bitrateByLayer.emplace_back(
+					  FBS::RtpStream::CreateBitrateByLayerDirect(
+					    builder, layer.c_str(), GetBitrate(nowMs, sIdx, tIdx)));
 				}
 			}
 		}
@@ -284,7 +286,21 @@ namespace RTC
 		// Process the packet at codec level.
 		if (packet->GetPayloadType() == GetPayloadType())
 		{
-			RTC::Codecs::Tools::ProcessRtpPacket(packet, GetMimeType());
+			try
+			{
+				if (!RTC::Codecs::Tools::ProcessRtpPacket(packet, GetMimeType()))
+				{
+					MS_WARN_TAG(rtp, "RTP codec processing exceeded packet capacity");
+
+					return false;
+				}
+			}
+			catch (const std::bad_alloc&)
+			{
+				MS_WARN_TAG(rtp, "RTP codec processing allocation failed");
+
+				return false;
+			}
 		}
 
 		// Pass the packet to the NackGenerator.
@@ -313,9 +329,7 @@ namespace RTC
 		int64_t estimatedCaptureClockOffset{ 0 };
 
 		if (packet->ReadAbsCaptureTime(
-		      absoluteCaptureTimestamp,
-		      hasEstimatedCaptureClockOffset,
-		      estimatedCaptureClockOffset))
+		      absoluteCaptureTimestamp, hasEstimatedCaptureClockOffset, estimatedCaptureClockOffset))
 		{
 			const auto receiveWallClockMs = Utils::Time::GetRealTimeMs();
 			UpdateAbsCaptureTime(
@@ -426,7 +440,21 @@ namespace RTC
 		// Process the packet at codec level.
 		if (packet->GetPayloadType() == GetPayloadType())
 		{
-			RTC::Codecs::Tools::ProcessRtpPacket(packet, GetMimeType());
+			try
+			{
+				if (!RTC::Codecs::Tools::ProcessRtpPacket(packet, GetMimeType()))
+				{
+					MS_WARN_TAG(rtp, "RTX codec processing exceeded packet capacity");
+
+					return false;
+				}
+			}
+			catch (const std::bad_alloc&)
+			{
+				MS_WARN_TAG(rtp, "RTX codec processing allocation failed");
+
+				return false;
+			}
 		}
 
 		// Mark the packet as retransmitted.
@@ -498,7 +526,7 @@ namespace RTC
 			this->packetsLost = 0u;
 		}
 
-		const uint32_t ingressPackets = this->mediaTransmissionCounter.GetPacketCount();
+		[[maybe_unused]] const uint32_t ingressPackets = this->mediaTransmissionCounter.GetPacketCount();
 
 		// Calculate Fraction Lost.
 		const uint32_t expectedInterval = expected - this->expectedPrior;
@@ -512,18 +540,13 @@ namespace RTC
 
 		const int32_t lostInterval = expectedInterval - receivedInterval;
 
-		if (
-			expectedInterval > 0u &&
-			(
-				this->packetsLost > prevPacketsLost + 32u ||
-				lostInterval > 32
-			)
-		)
+		if (expectedInterval > 0u && (this->packetsLost > prevPacketsLost + 32u || lostInterval > 32))
 		{
 			MS_DEBUG_DEV(
 			  "producer recv loss window jump [ssrc:%" PRIu32 ", expected:%" PRIu32 ", received:%" PRIu32
 			  ", packetsLostBefore:%" PRIu32 ", packetsLostNow:%" PRIu32 ", expectedInterval:%" PRIu32
-			  ", receivedInterval:%" PRIu32 ", lostInterval:%" PRIi32 ", nackCount:%zu, nackPacketCount:%zu]",
+			  ", receivedInterval:%" PRIu32 ", lostInterval:%" PRIi32
+			  ", nackCount:%zu, nackPacketCount:%zu]",
 			  GetSsrc(),
 			  expected,
 			  ingressPackets,

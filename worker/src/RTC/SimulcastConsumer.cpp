@@ -707,9 +707,10 @@ namespace RTC
 	}
 
 	void SimulcastConsumer::SendRtpPacket(
-	  RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket)
+	  RTC::RtpPacket* packet, RTC::Consumer::RtpPacketFanoutContext& /*fanoutContext*/)
 	{
 		MS_TRACE();
+		RTC::Consumer::RtpPacketMutationGuard packetGuard(packet, true);
 
 #ifdef MS_RTC_LOGGER_RTP
 		packet->logger.consumerId = this->id;
@@ -1045,7 +1046,10 @@ namespace RTC
 		}
 
 		// Process the packet.
-		if (this->rtpStream->ReceivePacket(packet, sharedPacket))
+		// Simulcast codec processing is consumer-specific. Its retransmission clone
+		// must never be shared with another consumer in either fanout order.
+		std::shared_ptr<RTC::RtpPacket> retransmissionPacket;
+		if (this->rtpStream->ReceivePacket(packet, retransmissionPacket))
 		{
 			if (this->rtpSeqManager.GetMaxOutput() == packet->GetSequenceNumber())
 			{
@@ -1076,13 +1080,6 @@ namespace RTC
 #endif
 		}
 
-		// Restore packet fields.
-		packet->SetSsrc(origSsrc);
-		packet->SetSequenceNumber(origSeq);
-		packet->SetTimestamp(origTimestamp);
-
-		// Restore the original payload if needed.
-		packet->RestorePayload();
 	}
 
 	bool SimulcastConsumer::GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs)

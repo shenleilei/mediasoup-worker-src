@@ -2,6 +2,7 @@
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpRetransmissionBuffer.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <memory>
 #include <vector>
 
 using namespace RTC;
@@ -36,14 +37,14 @@ public:
 		};
 		// clang-format on
 
-		auto* packet = RtpPacket::Parse(rtpBuffer, sizeof(rtpBuffer));
+		std::unique_ptr<RtpPacket> packet(RtpPacket::Parse(rtpBuffer, sizeof(rtpBuffer)));
 
 		packet->SetSequenceNumber(seq);
 		packet->SetTimestamp(timestamp);
 
 		std::shared_ptr<RtpPacket> sharedPacket;
 
-		RtpRetransmissionBuffer::Insert(packet, sharedPacket);
+		RtpRetransmissionBuffer::Insert(packet.get(), sharedPacket);
 	}
 
 	void AssertBuffer(std::vector<VerificationItem> verificationBuffer)
@@ -176,6 +177,37 @@ SCENARIO("RtpRetransmissionBuffer", "[rtp][rtx]")
 			}
 		);
 		// clang-format on
+	}
+
+	SECTION("item publication failure leaves no partial entry")
+	{
+		RtpMyRetransmissionBuffer myRetransmissionBuffer(10u, 2000u, 90000u);
+		RtpRetransmissionBuffer::FailNextItemPublicationForTesting();
+
+		CHECK_THROWS_AS(myRetransmissionBuffer.Insert(50000, 500000000u), std::bad_alloc);
+		myRetransmissionBuffer.AssertBuffer({});
+		myRetransmissionBuffer.Insert(50000, 500000000u);
+		myRetransmissionBuffer.AssertBuffer({ { true, 50000, 500000000u } });
+	}
+
+	SECTION("tail blank-slot publication failure rolls back its partial gap")
+	{
+		RtpMyRetransmissionBuffer myRetransmissionBuffer(10u, 2000u, 90000u);
+		myRetransmissionBuffer.Insert(51000, 510000000u);
+		RtpRetransmissionBuffer::FailNextBlankSlotPublicationForTesting(1u);
+
+		CHECK_THROWS_AS(myRetransmissionBuffer.Insert(51003, 510000003u), std::bad_alloc);
+		myRetransmissionBuffer.AssertBuffer({ { true, 51000, 510000000u } });
+	}
+
+	SECTION("front blank-slot publication failure rolls back its partial gap")
+	{
+		RtpMyRetransmissionBuffer myRetransmissionBuffer(10u, 2000u, 90000u);
+		myRetransmissionBuffer.Insert(52003, 520000003u);
+		RtpRetransmissionBuffer::FailNextBlankSlotPublicationForTesting(1u);
+
+		CHECK_THROWS_AS(myRetransmissionBuffer.Insert(52000, 520000000u), std::bad_alloc);
+		myRetransmissionBuffer.AssertBuffer({ { true, 52003, 520000003u } });
 	}
 
 	SECTION("packet with too old sequence number is discarded")

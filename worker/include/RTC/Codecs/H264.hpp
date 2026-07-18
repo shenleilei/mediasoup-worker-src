@@ -74,7 +74,7 @@ namespace RTC
 					this->payloadDescriptor->Dump();
 				}
 				bool Process(RTC::Codecs::EncodingContext* encodingContext, uint8_t* data, bool& marker) override;
-				void Restore(uint8_t* data) override;
+				void Restore(uint8_t* data) noexcept override;
 				uint8_t GetSpatialLayer() const override
 				{
 					return 0u;

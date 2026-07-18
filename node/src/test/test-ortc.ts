@@ -1,6 +1,22 @@
 import * as mediasoup from '../';
 import * as ortc from '../ortc';
 import { UnsupportedError } from '../errors';
+import {
+	rtpHeaderExtensionUriFromFbs,
+	rtpHeaderExtensionUriToFbs,
+} from '../RtpParameters';
+import { RtpHeaderExtensionUri as FbsRtpHeaderExtensionUri } from '../fbs/rtp-parameters/rtp-header-extension-uri';
+
+test('playout-delay RTP header extension URI converts to and from FBS', () => {
+	const uri = 'http://www.webrtc.org/experiments/rtp-hdrext/playout-delay';
+
+	expect(rtpHeaderExtensionUriToFbs(uri)).toBe(
+		FbsRtpHeaderExtensionUri.PlayoutDelay
+	);
+	expect(
+		rtpHeaderExtensionUriFromFbs(FbsRtpHeaderExtensionUri.PlayoutDelay)
+	).toBe(uri);
+});
 
 test('generateRouterRtpCapabilities() succeeds', () => {
 	const mediaCodecs: mediasoup.types.RtpCodecCapability[] = [
