@@ -83,8 +83,30 @@ namespace RTC
 		}
 
 	private:
+		void MarkRtpActivity();
 		void CalculateJitter(uint32_t rtpTimestamp);
 		void UpdateScore();
+
+	#ifdef MS_TEST
+	public:
+		uint64_t testGetRtpInactivityCheckInterval() const
+		{
+			return this->rtpInactivityCheckInterval;
+		}
+		uint64_t testGetLastRtpActivityAtMs() const
+		{
+			return this->lastRtpActivityAtMs;
+		}
+		void testSetLastRtpActivityAtMs(uint64_t value)
+		{
+			this->lastRtpActivityAtMs = value;
+		}
+		bool testIsRtpInactivityTimerActive() const
+		{
+			return this->inactivityCheckPeriodicTimer && this->inactivityCheckPeriodicTimer->IsActive();
+		}
+		void testFireRtpInactivityTimer();
+	#endif
 
 		/* Pure virtual methods inherited from RTC::RtpStream. */
 	public:
@@ -126,6 +148,8 @@ namespace RTC
 		uint32_t reportedPacketLost{ 0u };
 		std::unique_ptr<RTC::NackGenerator> nackGenerator;
 		TimerHandle* inactivityCheckPeriodicTimer{ nullptr };
+		uint64_t rtpInactivityCheckInterval{ 0u };
+		uint64_t lastRtpActivityAtMs{ 0u };
 		bool inactive{ false };
 		// Valid media + valid RTX.
 		TransmissionCounter transmissionCounter;

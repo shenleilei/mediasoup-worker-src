@@ -212,10 +212,12 @@ namespace RTC
 		{
 			// Run the RTP inactivity periodic timer (use a different timeout if DTX is
 			// enabled).
+			this->rtpInactivityCheckInterval =
+			  this->params.useDtx ? InactivityCheckIntervalWithDtx : InactivityCheckInterval;
+			this->lastRtpActivityAtMs = DepLibUV::GetTimeMs();
 			this->inactivityCheckPeriodicTimer = new TimerHandle(this);
 
-			this->inactivityCheckPeriodicTimer->Start(
-			  this->params.useDtx ? InactivityCheckIntervalWithDtx : InactivityCheckInterval);
+			this->inactivityCheckPeriodicTimer->Start(this->rtpInactivityCheckInterval);
 		}
 	}
 
@@ -345,19 +347,7 @@ namespace RTC
 		// Increase media transmission counter.
 		this->mediaTransmissionCounter.Update(packet);
 
-		// Not inactive anymore.
-		if (this->inactive)
-		{
-			this->inactive = false;
-
-			ResetScore(10, /*notify*/ true);
-		}
-
-		// Restart the inactivityCheckPeriodicTimer.
-		if (this->inactivityCheckPeriodicTimer)
-		{
-			this->inactivityCheckPeriodicTimer->Restart();
-		}
+		MarkRtpActivity();
 
 		return true;
 	}
@@ -470,19 +460,7 @@ namespace RTC
 			// Increase transmission counter.
 			this->transmissionCounter.Update(packet);
 
-			// Not inactive anymore.
-			if (this->inactive)
-			{
-				this->inactive = false;
-
-				ResetScore(10, /*notify*/ true);
-			}
-
-			// Restart the inactivityCheckPeriodicTimer.
-			if (this->inactivityCheckPeriodicTimer)
-			{
-				this->inactivityCheckPeriodicTimer->Restart();
-			}
+			MarkRtpActivity();
 
 			return true;
 		}
@@ -763,7 +741,28 @@ namespace RTC
 
 		if (this->inactivityCheckPeriodicTimer && !this->inactive)
 		{
+			this->lastRtpActivityAtMs = DepLibUV::GetTimeMs();
 			this->inactivityCheckPeriodicTimer->Restart();
+		}
+	}
+
+	inline void RtpStreamRecv::MarkRtpActivity()
+	{
+		MS_TRACE();
+
+		this->lastRtpActivityAtMs = DepLibUV::GetTimeMs();
+
+		// Not inactive anymore.
+		if (this->inactive)
+		{
+			this->inactive = false;
+
+			ResetScore(10, /*notify*/ true);
+		}
+
+		if (this->inactivityCheckPeriodicTimer && !this->inactivityCheckPeriodicTimer->IsActive())
+		{
+			this->inactivityCheckPeriodicTimer->Start(this->rtpInactivityCheckInterval);
 		}
 	}
 
@@ -942,6 +941,17 @@ namespace RTC
 
 		if (timer == this->inactivityCheckPeriodicTimer)
 		{
+			const uint64_t nowMs = DepLibUV::GetTimeMs();
+			const uint64_t elapsedMs =
+			  nowMs >= this->lastRtpActivityAtMs ? nowMs - this->lastRtpActivityAtMs : 0u;
+
+			if (elapsedMs < this->rtpInactivityCheckInterval)
+			{
+				this->inactivityCheckPeriodicTimer->Start(this->rtpInactivityCheckInterval - elapsedMs);
+
+				return;
+			}
+
 			this->inactive = true;
 
 			if (GetScore() != 0)
@@ -953,6 +963,23 @@ namespace RTC
 			ResetScore(0, /*notify*/ true);
 		}
 	}
+
+#ifdef MS_TEST
+	void RtpStreamRecv::testFireRtpInactivityTimer()
+	{
+		if (!this->inactivityCheckPeriodicTimer)
+		{
+			return;
+		}
+
+		if (this->inactivityCheckPeriodicTimer->IsActive())
+		{
+			this->inactivityCheckPeriodicTimer->Stop();
+		}
+
+		OnTimer(this->inactivityCheckPeriodicTimer);
+	}
+#endif
 
 	inline void RtpStreamRecv::OnNackGeneratorNackRequired(const std::vector<uint16_t>& seqNumbers)
 	{

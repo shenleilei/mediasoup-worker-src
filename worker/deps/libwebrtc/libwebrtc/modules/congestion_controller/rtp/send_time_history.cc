@@ -39,10 +39,16 @@ void SendTimeHistory::RemoveOld(int64_t at_time_ms) {
 void SendTimeHistory::AddNewPacket(PacketFeedback packet) {
   packet.long_sequence_number =
       seq_num_unwrapper_.Unwrap(packet.sequence_number);
-  history_.insert(std::make_pair(packet.long_sequence_number, packet));
-  if (packet.send_time_ms >= 0) {
-    AddPacketBytes(packet);
-    last_send_time_ms_ = std::max(last_send_time_ms_, packet.send_time_ms);
+  const auto insert_result =
+      history_.try_emplace(packet.long_sequence_number, std::move(packet));
+  if (!insert_result.second) {
+    return;
+  }
+  const auto& stored_packet = insert_result.first->second;
+  if (stored_packet.send_time_ms >= 0) {
+    AddPacketBytes(stored_packet);
+    last_send_time_ms_ =
+        std::max(last_send_time_ms_, stored_packet.send_time_ms);
   }
 }
 
@@ -83,11 +89,10 @@ absl::optional<PacketFeedback> SendTimeHistory::GetPacket(
     uint16_t sequence_number) const {
   int64_t unwrapped_seq_num =
       seq_num_unwrapper_.UnwrapWithoutUpdate(sequence_number);
-  absl::optional<PacketFeedback> optional_feedback;
   auto it = history_.find(unwrapped_seq_num);
-  if (it != history_.end())
-    optional_feedback.emplace(it->second);
-  return optional_feedback;
+  if (it == history_.end())
+    return absl::nullopt;
+  return it->second;
 }
 
 bool SendTimeHistory::GetFeedback(PacketFeedback* packet_feedback,

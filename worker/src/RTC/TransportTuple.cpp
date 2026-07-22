@@ -3,6 +3,7 @@
 
 #include "RTC/TransportTuple.hpp"
 #include "Logger.hpp"
+#include "RTC/ProxyWorkerSocket.hpp"
 #include <string>
 
 namespace RTC
@@ -39,6 +40,14 @@ namespace RTC
 
 	/* Instance methods. */
 
+	TransportTuple::TransportTuple(
+	  RTC::ProxyWorkerSocket* proxyWorkerSocket, const struct sockaddr* udpRemoteAddr)
+	  : proxyWorkerSocket(proxyWorkerSocket), udpRemoteAddr((struct sockaddr*)udpRemoteAddr),
+	    protocol(Protocol::UDP)
+	{
+		SetHash();
+	}
+
 	void TransportTuple::CloseTcpConnection()
 	{
 		MS_TRACE();
@@ -49,6 +58,65 @@ namespace RTC
 		}
 
 		this->tcpConnection->TriggerClose();
+	}
+
+	void TransportTuple::Send(
+	  const uint8_t* data, size_t len, RTC::TransportTuple::onSendCallback* cb)
+	{
+		if (this->protocol == Protocol::UDP)
+		{
+			if (this->proxyWorkerSocket)
+			{
+				this->proxyWorkerSocket->Send(data, len, this->udpRemoteAddr, cb);
+			}
+			else
+			{
+				this->udpSocket->Send(data, len, this->udpRemoteAddr, cb);
+			}
+		}
+		else
+		{
+			this->tcpConnection->Send(data, len, cb);
+		}
+	}
+
+	const struct sockaddr* TransportTuple::GetLocalAddress() const
+	{
+		if (this->protocol == Protocol::UDP)
+		{
+			return this->proxyWorkerSocket ? this->proxyWorkerSocket->GetLocalAddress() :
+			                                this->udpSocket->GetLocalAddress();
+		}
+		else
+		{
+			return this->tcpConnection->GetLocalAddress();
+		}
+	}
+
+	size_t TransportTuple::GetRecvBytes() const
+	{
+		if (this->protocol == Protocol::UDP)
+		{
+			return this->proxyWorkerSocket ? this->proxyWorkerSocket->GetRecvBytes() :
+			                                this->udpSocket->GetRecvBytes();
+		}
+		else
+		{
+			return this->tcpConnection->GetRecvBytes();
+		}
+	}
+
+	size_t TransportTuple::GetSentBytes() const
+	{
+		if (this->protocol == Protocol::UDP)
+		{
+			return this->proxyWorkerSocket ? this->proxyWorkerSocket->GetSentBytes() :
+			                                this->udpSocket->GetSentBytes();
+		}
+		else
+		{
+			return this->tcpConnection->GetSentBytes();
+		}
 	}
 
 	flatbuffers::Offset<FBS::Transport::Tuple> TransportTuple::FillBuffer(

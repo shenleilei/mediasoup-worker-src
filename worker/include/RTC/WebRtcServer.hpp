@@ -3,6 +3,7 @@
 
 #include "Channel/ChannelRequest.hpp"
 #include "RTC/IceCandidate.hpp"
+#include "RTC/ProxyWorkerSocket.hpp"
 #include "RTC/Shared.hpp"
 #include "RTC/StunPacket.hpp"
 #include "RTC/TcpConnection.hpp"
@@ -20,6 +21,7 @@
 namespace RTC
 {
 	class WebRtcServer : public RTC::UdpSocket::Listener,
+	                     public RTC::ProxyWorkerSocket::Listener,
 	                     public RTC::TcpServer::Listener,
 	                     public RTC::TcpConnection::Listener,
 	                     public RTC::WebRtcTransport::WebRtcTransportListener,
@@ -30,12 +32,17 @@ namespace RTC
 		{
 			// Expose a constructor to use vector.emplace_back().
 			UdpSocketOrTcpServer(
-			  RTC::UdpSocket* udpSocket, RTC::TcpServer* tcpServer, std::string announcedAddress) noexcept
-			  : udpSocket(udpSocket), tcpServer(tcpServer), announcedAddress(std::move(announcedAddress))
+			  RTC::UdpSocket* udpSocket,
+			  RTC::ProxyWorkerSocket* proxyWorkerSocket,
+			  RTC::TcpServer* tcpServer,
+			  std::string announcedAddress) noexcept
+			  : udpSocket(udpSocket), proxyWorkerSocket(proxyWorkerSocket), tcpServer(tcpServer),
+			    announcedAddress(std::move(announcedAddress))
 			{
 			}
 
 			RTC::UdpSocket* udpSocket;
+			RTC::ProxyWorkerSocket* proxyWorkerSocket;
 			RTC::TcpServer* tcpServer;
 			std::string announcedAddress;
 		};
@@ -97,6 +104,14 @@ namespace RTC
 	public:
 		void OnUdpSocketPacketReceived(
 		  RTC::UdpSocket* socket, const uint8_t* data, size_t len, const struct sockaddr* remoteAddr) override;
+
+		/* Pure virtual methods inherited from RTC::ProxyWorkerSocket::Listener. */
+	public:
+		void OnProxyWorkerSocketPacketReceived(
+		  RTC::ProxyWorkerSocket* socket,
+		  const uint8_t* data,
+		  size_t len,
+		  const struct sockaddr* remoteAddr) override;
 
 		/* Pure virtual methods inherited from RTC::TcpServer::Listener. */
 	public:

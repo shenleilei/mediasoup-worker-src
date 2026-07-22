@@ -6,6 +6,7 @@
 #include "RTC/RtpStreamRecv.hpp"
 #include <flatbuffers/flatbuffers.h>
 #include <catch2/catch_test_macros.hpp>
+#include <utility>
 #include <vector>
 
 using namespace RTC;
@@ -293,4 +294,97 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(static_cast<uint64_t>(baseStats->estimatedCaptureClockOffset().value()) == 0xfffefdfcfbfaf9f8ULL);
 
 	delete packet;
+}
+
+SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet restart", "[rtp][rtpstream][timer]")
+{
+	class RtpStreamRecvListener : public RtpStreamRecv::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t score, uint8_t previousScore) override
+		{
+			this->scores.emplace_back(previousScore, score);
+		}
+
+		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamNeedWorstRemoteFractionLost(
+		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
+		{
+		}
+
+	public:
+		std::vector<std::pair<uint8_t, uint8_t>> scores;
+	};
+
+	// clang-format off
+	uint8_t buffer[] =
+	{
+		0x80, 0x01, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x04,
+		0x00, 0x00, 0x00, 0x05
+	};
+	// clang-format on
+
+	RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+
+	if (!packet)
+	{
+		FAIL("not a RTP packet");
+	}
+
+	RtpStream::Params params;
+
+	params.ssrc      = packet->GetSsrc();
+	params.clockRate = 90000;
+
+	{
+		RtpStreamRecvListener listener;
+		RtpStreamRecv rtpStream(&listener, params, SendNackDelay, /*useRtpInactivityCheck*/ true);
+
+		const uint64_t interval = rtpStream.testGetRtpInactivityCheckInterval();
+
+		REQUIRE(interval == 1500u);
+		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == true);
+
+		rtpStream.testSetLastRtpActivityAtMs(DepLibUV::GetTimeMs() - interval + 10u);
+		rtpStream.testFireRtpInactivityTimer();
+
+		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(listener.scores.empty());
+		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == true);
+
+		rtpStream.testSetLastRtpActivityAtMs(DepLibUV::GetTimeMs() - interval);
+		rtpStream.testFireRtpInactivityTimer();
+
+		REQUIRE(rtpStream.GetScore() == 0u);
+		REQUIRE(listener.scores.size() == 1u);
+		const std::pair<uint8_t, uint8_t> inactiveScore{ 10u, 0u };
+		REQUIRE(listener.scores.back() == inactiveScore);
+		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == false);
+
+		packet->SetSequenceNumber(1);
+		REQUIRE(rtpStream.ReceivePacket(packet) == true);
+
+		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(listener.scores.size() == 2u);
+		const std::pair<uint8_t, uint8_t> activeScore{ 0u, 10u };
+		REQUIRE(listener.scores.back() == activeScore);
+		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == true);
+
+		const uint64_t firstActivityAtMs = rtpStream.testGetLastRtpActivityAtMs();
+
+		packet->SetSequenceNumber(2);
+		REQUIRE(rtpStream.ReceivePacket(packet) == true);
+		REQUIRE(rtpStream.testGetLastRtpActivityAtMs() >= firstActivityAtMs);
+		REQUIRE(rtpStream.GetScore() == 10u);
+	}
+
+	delete packet;
+
+	// Must run the loop to wait for UV timers and close them.
+	DepLibUV::RunLoop();
 }

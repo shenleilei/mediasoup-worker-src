@@ -4,9 +4,11 @@
 #include "RTC/WebRtcServer.hpp"
 #include "Logger.hpp"
 #include "MediaSoupErrors.hpp"
+#include "RTC/ProxyWorkerIpc.hpp"
 #include "Settings.hpp"
 #include "Utils.hpp"
 #include <cmath> // std::pow()
+#include <cstdlib>
 #include <memory>
 #include <new>
 
@@ -121,6 +123,7 @@ namespace RTC
 				if (listenInfo->protocol() == FBS::Transport::Protocol::UDP)
 				{
 					std::unique_ptr<RTC::UdpSocket> udpSocket;
+					std::unique_ptr<RTC::ProxyWorkerSocket> proxyWorkerSocket;
 
 					if (listenInfo->portRange()->min() != 0 && listenInfo->portRange()->max() != 0)
 					{
@@ -163,13 +166,33 @@ namespace RTC
 					  udpSocket->GetSendBufferSize(),
 					  udpSocket->GetRecvBufferSize());
 
+					const char* proxyWorkerUdsDir = std::getenv("MEDIASOUP_PROXY_WORKER_UDS_DIR");
+
+					if (proxyWorkerUdsDir && proxyWorkerUdsDir[0] != '\0')
+					{
+						auto proxyWorkerSocketPath = RTC::ProxyWorkerIpc::WorkerSocketPath(
+						  proxyWorkerUdsDir, udpSocket->GetLocalPort());
+
+						proxyWorkerSocket = std::make_unique<RTC::ProxyWorkerSocket>(
+						  this, std::move(proxyWorkerSocketPath), udpSocket->GetLocalAddress());
+
+						MS_DEBUG_TAG(
+						  info,
+						  "proxy-worker UDS socket listening on %s",
+						  proxyWorkerSocket->GetPath().c_str());
+					}
+
 #ifdef MS_TEST
 					MaybeFailConstructionForTesting(
 					  ConstructionFailurePointForTesting::BEFORE_SOCKET_PUBLICATION);
 #endif
 
 					this->udpSocketOrTcpServers.emplace_back(
-					  udpSocket.get(), nullptr, std::move(announcedAddress));
+					  udpSocket.get(),
+					  proxyWorkerSocket.get(),
+					  nullptr,
+					  std::move(announcedAddress));
+					proxyWorkerSocket.release();
 					udpSocket.release();
 
 #ifdef MS_TEST
@@ -230,7 +253,7 @@ namespace RTC
 #endif
 
 					this->udpSocketOrTcpServers.emplace_back(
-					  nullptr, tcpServer.get(), std::move(announcedAddress));
+					  nullptr, nullptr, tcpServer.get(), std::move(announcedAddress));
 					tcpServer.release();
 
 #ifdef MS_TEST
@@ -254,6 +277,9 @@ namespace RTC
 			{
 				delete item.udpSocket;
 				item.udpSocket = nullptr;
+
+				delete item.proxyWorkerSocket;
+				item.proxyWorkerSocket = nullptr;
 
 				delete item.tcpServer;
 				item.tcpServer = nullptr;
@@ -285,6 +311,9 @@ namespace RTC
 		{
 			delete item.udpSocket;
 			item.udpSocket = nullptr;
+
+			delete item.proxyWorkerSocket;
+			item.proxyWorkerSocket = nullptr;
 
 			delete item.tcpServer;
 			item.tcpServer = nullptr;
@@ -606,6 +635,16 @@ namespace RTC
 
 	inline void WebRtcServer::OnUdpSocketPacketReceived(
 	  RTC::UdpSocket* socket, const uint8_t* data, size_t len, const struct sockaddr* remoteAddr)
+	{
+		MS_TRACE();
+
+		RTC::TransportTuple tuple(socket, remoteAddr);
+
+		OnPacketReceived(&tuple, data, len);
+	}
+
+	inline void WebRtcServer::OnProxyWorkerSocketPacketReceived(
+	  RTC::ProxyWorkerSocket* socket, const uint8_t* data, size_t len, const struct sockaddr* remoteAddr)
 	{
 		MS_TRACE();
 

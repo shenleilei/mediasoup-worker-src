@@ -11,6 +11,8 @@
 
 namespace RTC
 {
+	class ProxyWorkerSocket;
+
 	class TransportTuple
 	{
 	protected:
@@ -33,6 +35,8 @@ namespace RTC
 			SetHash();
 		}
 
+		TransportTuple(RTC::ProxyWorkerSocket* proxyWorkerSocket, const struct sockaddr* udpRemoteAddr);
+
 		explicit TransportTuple(RTC::TcpConnection* tcpConnection)
 		  : tcpConnection(tcpConnection), protocol(Protocol::TCP)
 		{
@@ -40,9 +44,9 @@ namespace RTC
 		}
 
 		explicit TransportTuple(const TransportTuple* tuple)
-		  : hash(tuple->hash), udpSocket(tuple->udpSocket), udpRemoteAddr(tuple->udpRemoteAddr),
-		    tcpConnection(tuple->tcpConnection), localAnnouncedAddress(tuple->localAnnouncedAddress),
-		    protocol(tuple->protocol)
+		  : hash(tuple->hash), udpSocket(tuple->udpSocket), proxyWorkerSocket(tuple->proxyWorkerSocket),
+		    udpRemoteAddr(tuple->udpRemoteAddr), tcpConnection(tuple->tcpConnection),
+		    localAnnouncedAddress(tuple->localAnnouncedAddress), protocol(tuple->protocol)
 		{
 			if (protocol == TransportTuple::Protocol::UDP)
 			{
@@ -75,34 +79,14 @@ namespace RTC
 			this->localAnnouncedAddress = localAnnouncedAddress;
 		}
 
-		void Send(const uint8_t* data, size_t len, RTC::TransportTuple::onSendCallback* cb = nullptr)
-		{
-			if (this->protocol == Protocol::UDP)
-			{
-				this->udpSocket->Send(data, len, this->udpRemoteAddr, cb);
-			}
-			else
-			{
-				this->tcpConnection->Send(data, len, cb);
-			}
-		}
+		void Send(const uint8_t* data, size_t len, RTC::TransportTuple::onSendCallback* cb = nullptr);
 
 		Protocol GetProtocol() const
 		{
 			return this->protocol;
 		}
 
-		const struct sockaddr* GetLocalAddress() const
-		{
-			if (this->protocol == Protocol::UDP)
-			{
-				return this->udpSocket->GetLocalAddress();
-			}
-			else
-			{
-				return this->tcpConnection->GetLocalAddress();
-			}
-		}
+		const struct sockaddr* GetLocalAddress() const;
 
 		const struct sockaddr* GetRemoteAddress() const
 		{
@@ -116,29 +100,9 @@ namespace RTC
 			}
 		}
 
-		size_t GetRecvBytes() const
-		{
-			if (this->protocol == Protocol::UDP)
-			{
-				return this->udpSocket->GetRecvBytes();
-			}
-			else
-			{
-				return this->tcpConnection->GetRecvBytes();
-			}
-		}
+		size_t GetRecvBytes() const;
 
-		size_t GetSentBytes() const
-		{
-			if (this->protocol == Protocol::UDP)
-			{
-				return this->udpSocket->GetSentBytes();
-			}
-			else
-			{
-				return this->tcpConnection->GetSentBytes();
-			}
-		}
+		size_t GetSentBytes() const;
 
 	private:
 		void SetHash();
@@ -149,6 +113,7 @@ namespace RTC
 	private:
 		// Passed by argument.
 		RTC::UdpSocket* udpSocket{ nullptr };
+		RTC::ProxyWorkerSocket* proxyWorkerSocket{ nullptr };
 		struct sockaddr* udpRemoteAddr{ nullptr };
 		RTC::TcpConnection* tcpConnection{ nullptr };
 		std::string localAnnouncedAddress;
