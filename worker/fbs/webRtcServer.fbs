@@ -17,6 +17,26 @@ table TupleHash {
     web_rtc_transport_id: string (required);
 }
 
+table ProxyWorkerSocketStats {
+    local_port: uint16;
+    recv_bytes: uint64;
+    sent_bytes: uint64;
+    pending_send_datagrams: uint64;
+    pending_send_bytes: uint64;
+    transient_send_retries: uint64;
+    send_queue_full_drops: uint64;
+    send_expired_drops: uint64;
+    hard_send_errors: uint64;
+    receive_budget_yields: uint64;
+    receive_errors: uint64;
+    truncated_frame_drops: uint64;
+    malformed_frame_drops: uint64;
+    unknown_peer_drops: uint64;
+    short_send_errors: uint64;
+    poll_errors: uint64;
+    watcher_errors: uint64;
+}
+
 table DumpResponse {
     id: string (required);
     udp_sockets: [IpPort] (required);
@@ -24,5 +44,5 @@ table DumpResponse {
     web_rtc_transport_ids: [string] (required);
     local_ice_username_fragments: [IceUserNameFragment] (required);
     tuple_hashes: [TupleHash] (required);
+    proxy_worker_socket_stats: [ProxyWorkerSocketStats];
 }
-

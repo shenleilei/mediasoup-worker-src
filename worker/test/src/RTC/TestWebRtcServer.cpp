@@ -508,6 +508,189 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "ProxyWorkerSocket exposes severe framing and I/O failures as counters",
+  "[webrtcserver][proxy-worker-uds][observability]")
+{
+	TempDir dir;
+	const auto workerPath = RTC::ProxyWorkerIpc::WorkerSocketPath(dir.path, 8000);
+	const auto clientPath = dir.path + "/proxy-client-observability.sock";
+	sockaddr_in localAddr{};
+	localAddr.sin_family      = AF_INET;
+	localAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	localAddr.sin_port        = htons(8000);
+	sockaddr_in syntheticRemote{};
+	syntheticRemote.sin_family      = AF_INET;
+	syntheticRemote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	syntheticRemote.sin_port        = htons(12345);
+
+	ProxyWorkerSocketTestListener listener;
+	{
+		RTC::ProxyWorkerSocket socket(
+		  &listener, workerPath, reinterpret_cast<const sockaddr*>(&localAddr));
+		const int clientFd = BindUnixDatagramSocket(clientPath);
+		REQUIRE(clientFd >= 0);
+		ConnectUnixDatagramSocket(clientFd, workerPath);
+
+		const std::vector<uint8_t> payload{ 0x80, 0x60, 0x01, 0x02 };
+		socket.Send(
+		  payload.data(), payload.size(), reinterpret_cast<const sockaddr*>(&syntheticRemote), nullptr);
+		CHECK(socket.GetUnknownPeerDrops() == 1u);
+
+		const std::vector<uint8_t> malformed{ 0x01 };
+		REQUIRE(
+		  ::send(clientFd, malformed.data(), malformed.size(), 0) ==
+		  static_cast<ssize_t>(malformed.size()));
+		socket.OnUvPoll(0, UV_READABLE);
+		CHECK(socket.GetMalformedFrameDrops() == 1u);
+		CHECK(listener.count == 0u);
+
+		const std::vector<uint8_t> oversized(RTC::ProxyWorkerIpc::kMaxFrameSize + 1u, 0x7f);
+		REQUIRE(
+		  ::send(clientFd, oversized.data(), oversized.size(), 0) ==
+		  static_cast<ssize_t>(oversized.size()));
+		socket.OnUvPoll(0, UV_READABLE);
+		CHECK(socket.GetTruncatedFrameDrops() == 1u);
+		CHECK(listener.count == 0u);
+
+		socket.FailNextReceivesForTesting(EIO, 1u);
+		socket.OnUvPoll(0, UV_READABLE);
+		CHECK(socket.GetReceiveErrors() == 1u);
+
+		std::vector<uint8_t> frame;
+		REQUIRE(
+		  RTC::ProxyWorkerIpc::EncodeFrame(
+		    reinterpret_cast<const sockaddr*>(&syntheticRemote), payload.data(), payload.size(), frame));
+		REQUIRE(::send(clientFd, frame.data(), frame.size(), 0) == static_cast<ssize_t>(frame.size()));
+		for (size_t idx{ 0u }; idx < 8u && listener.count == 0u; ++idx)
+		{
+			uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+		}
+		REQUIRE(listener.count == 1u);
+		CHECK(RecvUnixWithTimeout(clientFd) == std::vector<uint8_t>{ 'o', 'k' });
+
+		std::vector<bool> callbacks;
+		socket.FailNextSendsForTesting(EIO, 1u);
+		socket.Send(
+		  payload.data(),
+		  payload.size(),
+		  reinterpret_cast<const sockaddr*>(&syntheticRemote),
+		  new RTC::ProxyWorkerSocket::onSendCallback([&callbacks](bool sent)
+		                                             { callbacks.push_back(sent); }));
+		CHECK(socket.GetHardSendErrors() == 1u);
+		REQUIRE(callbacks == std::vector<bool>{ false });
+
+		socket.ShortNextSendsForTesting(1u);
+		socket.Send(
+		  payload.data(),
+		  payload.size(),
+		  reinterpret_cast<const sockaddr*>(&syntheticRemote),
+		  new RTC::ProxyWorkerSocket::onSendCallback([&callbacks](bool sent)
+		                                             { callbacks.push_back(sent); }));
+		CHECK(socket.GetShortSendErrors() == 1u);
+		REQUIRE(callbacks == std::vector<bool>{ false, false });
+
+		socket.OnUvPoll(UV_EIO, 0);
+		CHECK(socket.GetPollErrors() == 1u);
+
+		::close(clientFd);
+		(void)::unlink(clientPath.c_str());
+	}
+	DrainClosingHandles();
+}
+
+TEST_CASE(
+  "WebRtcServer dump includes worker UDS observability fields",
+  "[webrtcserver][proxy-worker-uds][observability][flatbuffers]")
+{
+	TempDir dir;
+	ScopedEnvVar udsDir("MEDIASOUP_PROXY_WORKER_UDS_DIR", dir.path.c_str());
+	flatbuffers::FlatBufferBuilder requestBuilder;
+	const auto port     = PickFreeUdpPort();
+	const auto* request = BuildRequest(requestBuilder, port);
+	RTC::Shared shared(new ChannelMessageRegistrator(), nullptr);
+
+	{
+		RTC::WebRtcServer server(&shared, "web-rtc-server-observability", request->listenInfos());
+		flatbuffers::FlatBufferBuilder dumpBuilder;
+		const auto dumpOffset = server.FillBuffer(dumpBuilder);
+		dumpBuilder.Finish(dumpOffset);
+		const auto* dump = flatbuffers::GetRoot<FBS::WebRtcServer::DumpResponse>(
+		  dumpBuilder.GetBufferPointer());
+		REQUIRE(dump != nullptr);
+		REQUIRE(dump->proxyWorkerSocketStats() != nullptr);
+		REQUIRE(dump->proxyWorkerSocketStats()->size() == 1u);
+		const auto* stats = dump->proxyWorkerSocketStats()->Get(0u);
+		REQUIRE(stats != nullptr);
+		CHECK(stats->localPort() == port);
+		CHECK(stats->receiveErrors() == 0u);
+		CHECK(stats->truncatedFrameDrops() == 0u);
+		CHECK(stats->malformedFrameDrops() == 0u);
+		CHECK(stats->unknownPeerDrops() == 0u);
+		CHECK(stats->shortSendErrors() == 0u);
+		CHECK(stats->pollErrors() == 0u);
+		CHECK(stats->watcherErrors() == 0u);
+	}
+
+	DrainClosingHandles();
+}
+
+TEST_CASE(
+  "ProxyWorkerSocket counts watcher reconfiguration failures",
+  "[webrtcserver][proxy-worker-uds][observability][watcher]")
+{
+	TempDir dir;
+	const auto workerPath = RTC::ProxyWorkerIpc::WorkerSocketPath(dir.path, 8000);
+	const auto clientPath = dir.path + "/proxy-client-watcher.sock";
+	sockaddr_in localAddr{};
+	localAddr.sin_family      = AF_INET;
+	localAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	localAddr.sin_port        = htons(8000);
+	sockaddr_in syntheticRemote{};
+	syntheticRemote.sin_family      = AF_INET;
+	syntheticRemote.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	syntheticRemote.sin_port        = htons(12345);
+
+	ProxyWorkerSocketTestListener listener;
+	{
+		RTC::ProxyWorkerSocket socket(
+		  &listener, workerPath, reinterpret_cast<const sockaddr*>(&localAddr));
+		const int clientFd = BindUnixDatagramSocket(clientPath);
+		REQUIRE(clientFd >= 0);
+		ConnectUnixDatagramSocket(clientFd, workerPath);
+		const std::vector<uint8_t> payload{ 0x80, 0x60, 0x01, 0x02 };
+		std::vector<uint8_t> frame;
+		REQUIRE(
+		  RTC::ProxyWorkerIpc::EncodeFrame(
+		    reinterpret_cast<const sockaddr*>(&syntheticRemote), payload.data(), payload.size(), frame));
+		REQUIRE(::send(clientFd, frame.data(), frame.size(), 0) == static_cast<ssize_t>(frame.size()));
+		for (size_t idx{ 0u }; idx < 8u && listener.count == 0u; ++idx)
+		{
+			uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+		}
+		REQUIRE(listener.count == 1u);
+		(void)RecvUnixWithTimeout(clientFd);
+
+		std::vector<bool> callbacks;
+		socket.FailNextSendsForTesting(EAGAIN, 1u);
+		socket.FailNextWatcherUpdatesForTesting(1u);
+		socket.Send(
+		  payload.data(),
+		  payload.size(),
+		  reinterpret_cast<const sockaddr*>(&syntheticRemote),
+		  new RTC::ProxyWorkerSocket::onSendCallback([&callbacks](bool sent)
+		                                             { callbacks.push_back(sent); }));
+		CHECK(socket.GetTransientSendRetries() == 1u);
+		CHECK(socket.GetWatcherErrors() == 1u);
+		CHECK(socket.GetPendingSendDatagrams() == 0u);
+		REQUIRE(callbacks == std::vector<bool>{ false });
+
+		::close(clientFd);
+		(void)::unlink(clientPath.c_str());
+	}
+	DrainClosingHandles();
+}
+
+TEST_CASE(
   "ProxyWorkerSocket retries transient reverse-path pressure in order",
   "[webrtcserver][proxy-worker-uds][backpressure]")
 {
@@ -570,6 +753,8 @@ TEST_CASE(
 		CHECK(socket.GetPendingSendDatagrams() == 0u);
 		CHECK(socket.GetPendingSendBytes() == 0u);
 		CHECK(socket.GetTransientSendRetries() == 2u);
+		CHECK(socket.GetHardSendErrors() == 0u);
+		CHECK(socket.GetShortSendErrors() == 0u);
 		CHECK(RecvUnixWithTimeout(clientFd) == first);
 		CHECK(RecvUnixWithTimeout(clientFd) == second);
 

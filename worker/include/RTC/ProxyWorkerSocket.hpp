@@ -103,6 +103,41 @@ namespace RTC
 			return this->receiveBudgetYields;
 		}
 
+		uint64_t GetReceiveErrors() const
+		{
+			return this->receiveErrors;
+		}
+
+		uint64_t GetTruncatedFrameDrops() const
+		{
+			return this->truncatedFrameDrops;
+		}
+
+		uint64_t GetMalformedFrameDrops() const
+		{
+			return this->malformedFrameDrops;
+		}
+
+		uint64_t GetUnknownPeerDrops() const
+		{
+			return this->unknownPeerDrops;
+		}
+
+		uint64_t GetShortSendErrors() const
+		{
+			return this->shortSendErrors;
+		}
+
+		uint64_t GetPollErrors() const
+		{
+			return this->pollErrors;
+		}
+
+		uint64_t GetWatcherErrors() const
+		{
+			return this->watcherErrors;
+		}
+
 #ifdef MS_TEST
 		void FailNextSendsForTesting(int error, size_t attempts)
 		{
@@ -124,6 +159,22 @@ namespace RTC
 		void SetReceiveBudgetForTesting(size_t datagrams)
 		{
 			this->maxReceiveDatagramsPerPoll = datagrams;
+		}
+
+		void FailNextReceivesForTesting(int error, size_t attempts)
+		{
+			this->receiveErrorForTesting    = error;
+			this->receiveFailuresForTesting = attempts;
+		}
+
+		void ShortNextSendsForTesting(size_t attempts)
+		{
+			this->shortSendsForTesting = attempts;
+		}
+
+		void FailNextWatcherUpdatesForTesting(size_t attempts)
+		{
+			this->watcherFailuresForTesting = attempts;
 		}
 #endif
 
@@ -187,10 +238,21 @@ namespace RTC
 		uint64_t sendExpiredDrops{ 0u };
 		uint64_t hardSendErrors{ 0u };
 		uint64_t receiveBudgetYields{ 0u };
+		uint64_t receiveErrors{ 0u };
+		uint64_t truncatedFrameDrops{ 0u };
+		uint64_t malformedFrameDrops{ 0u };
+		uint64_t unknownPeerDrops{ 0u };
+		uint64_t shortSendErrors{ 0u };
+		uint64_t pollErrors{ 0u };
+		uint64_t watcherErrors{ 0u };
 		bool closing{ false };
 #ifdef MS_TEST
 		int sendErrorForTesting{ 0 };
 		size_t sendFailuresForTesting{ 0u };
+		int receiveErrorForTesting{ 0 };
+		size_t receiveFailuresForTesting{ 0u };
+		size_t shortSendsForTesting{ 0u };
+		size_t watcherFailuresForTesting{ 0u };
 #endif
 	};
 } // namespace RTC

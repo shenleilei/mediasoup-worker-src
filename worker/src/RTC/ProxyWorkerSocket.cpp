@@ -219,7 +219,11 @@ namespace RTC
 
 		if (status < 0)
 		{
-			MS_ERROR("proxy-worker UDS poll error: %s", uv_strerror(status));
+			++this->pollErrors;
+			MS_ERROR(
+			  "proxy-worker UDS poll error [errors:%llu error:%s]",
+			  static_cast<unsigned long long>(this->pollErrors),
+			  uv_strerror(status));
 			this->Close();
 			return;
 		}
@@ -258,12 +262,23 @@ namespace RTC
 			int received{ 0 };
 			while (true)
 			{
-				received = ::recvmmsg(
-				  this->fd,
-				  this->receiveBatchStorage->messages.data(),
-				  static_cast<unsigned int>(batchSize),
-				  MSG_DONTWAIT,
-				  nullptr);
+			#ifdef MS_TEST
+				if (this->receiveFailuresForTesting > 0u)
+				{
+					--this->receiveFailuresForTesting;
+					errno    = this->receiveErrorForTesting;
+					received = -1;
+				}
+				else
+			#endif
+				{
+					received = ::recvmmsg(
+					  this->fd,
+					  this->receiveBatchStorage->messages.data(),
+					  static_cast<unsigned int>(batchSize),
+					  MSG_DONTWAIT,
+					  nullptr);
+				}
 				if (received < 0 && errno == EINTR)
 				{
 					continue;
@@ -274,7 +289,15 @@ namespace RTC
 			{
 				if (errno != EAGAIN && errno != EWOULDBLOCK)
 				{
-					MS_ERROR("proxy-worker UDS recvmmsg() failed: %s", std::strerror(errno));
+					const auto error = errno;
+					++this->receiveErrors;
+					if (ShouldLogDropCounter(this->receiveErrors))
+					{
+						MS_ERROR(
+						  "proxy-worker UDS receive error [errors:%llu error:%s]",
+						  static_cast<unsigned long long>(this->receiveErrors),
+						  std::strerror(error));
+					}
 				}
 				return;
 			}
@@ -288,7 +311,15 @@ namespace RTC
 				const auto& message = this->receiveBatchStorage->messages[index];
 				if ((message.msg_hdr.msg_flags & MSG_TRUNC) != 0)
 				{
-					MS_WARN_DEV("proxy-worker UDS dropped truncated frame");
+					++this->truncatedFrameDrops;
+					if (ShouldLogDropCounter(this->truncatedFrameDrops))
+					{
+						MS_ERROR(
+						  "proxy-worker UDS truncated frame drop [drops:%llu receivedBytes:%u maxFrameBytes:%zu]",
+						  static_cast<unsigned long long>(this->truncatedFrameDrops),
+						  message.msg_len,
+						  RTC::ProxyWorkerIpc::kMaxFrameSize);
+					}
 					continue;
 				}
 				this->ProcessReceivedDatagram(
@@ -316,14 +347,27 @@ namespace RTC
 	{
 		if (!data || len == 0u)
 		{
+			++this->malformedFrameDrops;
+			if (ShouldLogDropCounter(this->malformedFrameDrops))
+			{
+				MS_ERROR(
+				  "proxy-worker UDS malformed frame drop [drops:%llu error:empty_frame]",
+				  static_cast<unsigned long long>(this->malformedFrameDrops));
+			}
 			return;
 		}
 		RTC::ProxyWorkerIpc::DecodedFrame frame;
 		const auto decodeError = RTC::ProxyWorkerIpc::DecodeFrame(data, len, frame);
 		if (decodeError != RTC::ProxyWorkerIpc::DecodeError::None)
 		{
-			MS_WARN_DEV(
-			  "proxy-worker UDS dropped malformed frame [error:%u]", static_cast<unsigned>(decodeError));
+			++this->malformedFrameDrops;
+			if (ShouldLogDropCounter(this->malformedFrameDrops))
+			{
+				MS_ERROR(
+				  "proxy-worker UDS malformed frame drop [drops:%llu error:%u]",
+				  static_cast<unsigned long long>(this->malformedFrameDrops),
+				  static_cast<unsigned>(decodeError));
+			}
 			return;
 		}
 
@@ -386,6 +430,19 @@ namespace RTC
 					}
 				}
 			}
+			else
+			{
+				++this->unknownPeerDrops;
+				if (ShouldLogDropCounter(this->unknownPeerDrops))
+				{
+					MS_ERROR(
+					  "proxy-worker UDS unknown peer drop [drops:%llu pendingDatagrams:%zu pendingBytes:%zu datagramBytes:%zu]",
+					  static_cast<unsigned long long>(this->unknownPeerDrops),
+					  this->pendingSends.size(),
+					  this->pendingSendBytes,
+					  len);
+				}
+			}
 		}
 
 		if (cb && !callbackOwnedByQueue)
@@ -409,7 +466,12 @@ namespace RTC
 		{
 			ssize_t nsent{ -1 };
 #ifdef MS_TEST
-			if (this->sendFailuresForTesting > 0u)
+			if (this->shortSendsForTesting > 0u)
+			{
+				--this->shortSendsForTesting;
+				nsent = len > 0u ? static_cast<ssize_t>(len - 1u) : 0;
+			}
+			else if (this->sendFailuresForTesting > 0u)
 			{
 				--this->sendFailuresForTesting;
 				errno = this->sendErrorForTesting;
@@ -423,7 +485,20 @@ namespace RTC
 			if (nsent >= 0)
 			{
 				this->sentBytes += static_cast<size_t>(nsent);
-				return static_cast<size_t>(nsent) == len;
+				if (static_cast<size_t>(nsent) == len)
+				{
+					return true;
+				}
+				++this->shortSendErrors;
+				if (ShouldLogDropCounter(this->shortSendErrors))
+				{
+					MS_ERROR(
+					  "proxy-worker UDS short send [errors:%llu sentBytes:%zd datagramBytes:%zu]",
+					  static_cast<unsigned long long>(this->shortSendErrors),
+					  nsent,
+					  len);
+				}
+				return false;
 			}
 			if (errno == EINTR)
 			{
@@ -591,10 +666,25 @@ namespace RTC
 			return false;
 		}
 		const int events = this->pendingSends.empty() ? UV_READABLE : UV_READABLE | UV_WRITABLE;
-		const int err = uv_poll_start(this->pollHandle, events, static_cast<uv_poll_cb>(OnUvPollEvent));
+		int err{ 0 };
+	#ifdef MS_TEST
+		if (this->watcherFailuresForTesting > 0u)
+		{
+			--this->watcherFailuresForTesting;
+			err = UV_EINVAL;
+		}
+		else
+	#endif
+		{
+			err = uv_poll_start(this->pollHandle, events, static_cast<uv_poll_cb>(OnUvPollEvent));
+		}
 		if (err != 0)
 		{
-			MS_ERROR("proxy-worker UDS uv_poll_start() failed: %s", uv_strerror(err));
+			++this->watcherErrors;
+			MS_ERROR(
+			  "proxy-worker UDS poll watcher update failed [errors:%llu error:%s]",
+			  static_cast<unsigned long long>(this->watcherErrors),
+			  uv_strerror(err));
 			return false;
 		}
 		return true;
@@ -631,11 +721,18 @@ namespace RTC
 		}
 		catch (const std::exception& error)
 		{
-			MS_ERROR("proxy-worker UDS expiry timer update failed: %s", error.what());
+			++this->watcherErrors;
+			MS_ERROR(
+			  "proxy-worker UDS expiry timer update failed [errors:%llu error:%s]",
+			  static_cast<unsigned long long>(this->watcherErrors),
+			  error.what());
 		}
 		catch (...)
 		{
-			MS_ERROR("proxy-worker UDS expiry timer update failed: unknown error");
+			++this->watcherErrors;
+			MS_ERROR(
+			  "proxy-worker UDS expiry timer update failed [errors:%llu error:unknown]",
+			  static_cast<unsigned long long>(this->watcherErrors));
 		}
 		return false;
 	}

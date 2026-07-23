@@ -329,6 +329,8 @@ namespace RTC
 		// Add udpSockets and tcpServers.
 		std::vector<flatbuffers::Offset<FBS::WebRtcServer::IpPort>> udpSockets;
 		std::vector<flatbuffers::Offset<FBS::WebRtcServer::IpPort>> tcpServers;
+		std::vector<flatbuffers::Offset<FBS::WebRtcServer::ProxyWorkerSocketStats>>
+		  proxyWorkerSocketStats;
 
 		for (const auto& item : this->udpSocketOrTcpServers)
 		{
@@ -336,6 +338,29 @@ namespace RTC
 			{
 				udpSockets.emplace_back(FBS::WebRtcServer::CreateIpPortDirect(
 				  builder, item.udpSocket->GetLocalIp().c_str(), item.udpSocket->GetLocalPort()));
+				if (item.proxyWorkerSocket)
+				{
+					proxyWorkerSocketStats.emplace_back(
+					  FBS::WebRtcServer::CreateProxyWorkerSocketStats(
+					    builder,
+					    item.udpSocket->GetLocalPort(),
+					    item.proxyWorkerSocket->GetRecvBytes(),
+					    item.proxyWorkerSocket->GetSentBytes(),
+					    item.proxyWorkerSocket->GetPendingSendDatagrams(),
+					    item.proxyWorkerSocket->GetPendingSendBytes(),
+					    item.proxyWorkerSocket->GetTransientSendRetries(),
+					    item.proxyWorkerSocket->GetSendQueueFullDrops(),
+					    item.proxyWorkerSocket->GetSendExpiredDrops(),
+					    item.proxyWorkerSocket->GetHardSendErrors(),
+					    item.proxyWorkerSocket->GetReceiveBudgetYields(),
+					    item.proxyWorkerSocket->GetReceiveErrors(),
+					    item.proxyWorkerSocket->GetTruncatedFrameDrops(),
+					    item.proxyWorkerSocket->GetMalformedFrameDrops(),
+					    item.proxyWorkerSocket->GetUnknownPeerDrops(),
+					    item.proxyWorkerSocket->GetShortSendErrors(),
+					    item.proxyWorkerSocket->GetPollErrors(),
+					    item.proxyWorkerSocket->GetWatcherErrors()));
+				}
 			}
 			else if (item.tcpServer)
 			{
@@ -383,7 +408,8 @@ namespace RTC
 		  &tcpServers,
 		  &webRtcTransportIds,
 		  &localIceUsernameFragments,
-		  &tupleHashes);
+		  &tupleHashes,
+		  &proxyWorkerSocketStats);
 	}
 
 	void WebRtcServer::HandleRequest(Channel::ChannelRequest* request)
