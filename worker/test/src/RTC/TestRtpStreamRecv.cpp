@@ -173,12 +173,20 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 
 		REQUIRE(listener.nackedSeqNumbers.size() == 1);
 		REQUIRE(listener.nackedSeqNumbers[0] == 2);
+		REQUIRE(rtpStream.GetNewlyMissingPackets() == 1u);
+		REQUIRE(rtpStream.GetRetransmittedPackets() == 0u);
+		REQUIRE(rtpStream.GetRepairedPackets() == 0u);
+		REQUIRE(rtpStream.GetUnrecoveredPackets() == 0u);
 		listener.nackedSeqNumbers.clear();
 
 		packet->SetSequenceNumber(2);
 		rtpStream.ReceivePacket(packet);
 
 		REQUIRE(listener.nackedSeqNumbers.size() == 0);
+		REQUIRE(rtpStream.GetNewlyMissingPackets() == 1u);
+		REQUIRE(rtpStream.GetRetransmittedPackets() == 1u);
+		REQUIRE(rtpStream.GetRepairedPackets() == 1u);
+		REQUIRE(rtpStream.GetUnrecoveredPackets() == 0u);
 
 		packet->SetSequenceNumber(4);
 		rtpStream.ReceivePacket(packet);
@@ -203,6 +211,7 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 		REQUIRE(listener.nackedSeqNumbers.size() == 2);
 		REQUIRE(listener.nackedSeqNumbers[0] == 0xffff);
 		REQUIRE(listener.nackedSeqNumbers[1] == 0);
+		REQUIRE(rtpStream.GetNewlyMissingPackets() == 2u);
 		listener.nackedSeqNumbers.clear();
 	}
 
@@ -220,6 +229,8 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 		listener.shouldTriggerPLI = true;
 		listener.shouldTriggerFIR = false;
 		rtpStream.ReceivePacket(packet);
+		REQUIRE(rtpStream.GetNewlyMissingPackets() == 1001u);
+		REQUIRE(rtpStream.GetUnrecoveredPackets() == 1001u);
 	}
 
 	// Must run the loop to wait for UV timers and close them.
@@ -333,6 +344,10 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(baseStats->rtcpExpectedPackets() == 2u);
 	REQUIRE(baseStats->rtcpReceivedPackets() == 2u);
 	REQUIRE(baseStats->rtcpLostPackets() == 0u);
+	REQUIRE(baseStats->newlyMissingPackets() == 0u);
+	REQUIRE(baseStats->repairedPackets() == 0u);
+	REQUIRE(baseStats->retransmittedPackets() == 0u);
+	REQUIRE(baseStats->unrecoveredPackets() == 0u);
 	REQUIRE(recvStats->jitterUpdatedAtMs() == rtpStream.GetJitterUpdatedAtMs());
 	REQUIRE(recvStats->reportedBitrateWindowMs() == 2500u);
 	REQUIRE(recvStats->rtpActive() == true);

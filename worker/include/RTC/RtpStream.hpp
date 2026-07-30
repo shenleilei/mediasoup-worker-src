@@ -165,6 +165,22 @@ namespace RTC
 		{
 			return this->rtcpLostPackets;
 		}
+		uint64_t GetNewlyMissingPackets() const
+		{
+			return this->newlyMissingPackets;
+		}
+		uint64_t GetRepairedPackets() const
+		{
+			return this->repairedPackets;
+		}
+		uint64_t GetRetransmittedPackets() const
+		{
+			return this->retransmittedPackets;
+		}
+		uint64_t GetUnrecoveredPackets() const
+		{
+			return this->unrecoveredPackets;
+		}
 		bool HasAbsCaptureTime() const
 		{
 			return this->hasAbsCaptureTime;
@@ -219,10 +235,12 @@ namespace RTC
 		}
 
 	protected:
-		bool UpdateSeq(RTC::RtpPacket* packet);
+		bool UpdateSeq(RTC::RtpPacket* packet, bool notifyGap = true);
 		void UpdateScore(uint8_t score);
+		void PacketNewlyMissing(size_t packetCount);
 		void PacketRetransmitted(RTC::RtpPacket* packet);
 		void PacketRepaired(RTC::RtpPacket* packet);
+		void PacketUnrecovered(size_t packetCount);
 		void UpdateAbsCaptureTime(
 		  uint64_t absoluteCaptureTimestamp,
 		  bool hasEstimatedCaptureClockOffset,
@@ -238,6 +256,9 @@ namespace RTC
 
 		/* Pure virtual method that must be implemented by the subclass. */
 	protected:
+		virtual void UserOnSequenceNumberGap(uint16_t seqStart, uint16_t seqEnd, uint16_t missingPackets)
+		{
+		}
 		virtual void UserOnSequenceNumberReset() = 0;
 
 	protected:
@@ -267,6 +288,10 @@ namespace RTC
 		uint64_t rtcpExpectedPackets{ 0u };
 		uint64_t rtcpReceivedPackets{ 0u };
 		uint64_t rtcpLostPackets{ 0u };
+		uint64_t newlyMissingPackets{ 0u };
+		uint64_t repairedPackets{ 0u };
+		uint64_t retransmittedPackets{ 0u };
+		uint64_t unrecoveredPackets{ 0u };
 		size_t packetsDiscarded{ 0u };
 		size_t packetsRetransmitted{ 0u };
 		size_t packetsRepaired{ 0u };

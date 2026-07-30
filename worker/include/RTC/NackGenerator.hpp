@@ -22,6 +22,9 @@ namespace RTC
 		public:
 			virtual void OnNackGeneratorNackRequired(const std::vector<uint16_t>& seqNumbers) = 0;
 			virtual void OnNackGeneratorKeyFrameRequired()                                    = 0;
+			virtual void OnNackGeneratorPacketsUnrecoverable(size_t /*packetCount*/)
+			{
+			}
 		};
 
 	private:
@@ -55,6 +58,10 @@ namespace RTC
 		{
 			return this->nackList.size();
 		}
+		size_t GetUnrecoverablePackets() const
+		{
+			return this->unrecoverablePackets;
+		}
 		void UpdateRtt(uint32_t rtt)
 		{
 			this->rtt = rtt;
@@ -64,6 +71,7 @@ namespace RTC
 	private:
 		void AddPacketsToNackList(uint16_t seqStart, uint16_t seqEnd);
 		bool RemoveNackItemsUntilKeyFrame();
+		void MarkPacketsUnrecoverable(size_t packetCount);
 		std::vector<uint16_t> GetNackBatch(NackFilter filter);
 		void MayRunTimer() const;
 
@@ -84,6 +92,7 @@ namespace RTC
 		bool started{ false };
 		uint16_t lastSeq{ 0u }; // Seq number of last valid packet.
 		uint32_t rtt{ 0u };     // Round trip time (ms).
+		size_t unrecoverablePackets{ 0u };
 	};
 } // namespace RTC
 

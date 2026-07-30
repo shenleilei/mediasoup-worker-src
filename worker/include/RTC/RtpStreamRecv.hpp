@@ -127,6 +127,7 @@ namespace RTC
 
 		/* Pure virtual methods inherited from RTC::RtpStream. */
 	public:
+		void UserOnSequenceNumberGap(uint16_t seqStart, uint16_t seqEnd, uint16_t missingPackets) override;
 		void UserOnSequenceNumberReset() override;
 
 		/* Pure virtual methods inherited from TimerHandle. */
@@ -137,6 +138,7 @@ namespace RTC
 	protected:
 		void OnNackGeneratorNackRequired(const std::vector<uint16_t>& seqNumbers) override;
 		void OnNackGeneratorKeyFrameRequired() override;
+		void OnNackGeneratorPacketsUnrecoverable(size_t packetCount) override;
 
 	private:
 		// Passed by argument.

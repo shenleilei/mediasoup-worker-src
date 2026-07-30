@@ -433,7 +433,7 @@ namespace RTC
 		  packet->GetSequenceNumber());
 
 		// If not a valid packet ignore it.
-		if (!RTC::RtpStream::UpdateSeq(packet))
+		if (!RTC::RtpStream::UpdateSeq(packet, /*notifyGap*/ false))
 		{
 			MS_WARN_DEV(
 			  "producer recv invalid RTX packet after decode [mediaSsrc:%" PRIu32 ", mediaSeq:%" PRIu16
@@ -998,6 +998,14 @@ namespace RTC
 		this->rtcpLostPackets       = 0u;
 	}
 
+	void RtpStreamRecv::UserOnSequenceNumberGap(
+	  uint16_t /*seqStart*/, uint16_t /*seqEnd*/, uint16_t missingPackets)
+	{
+		MS_TRACE();
+
+		PacketNewlyMissing(missingPackets);
+	}
+
 	inline void RtpStreamRecv::OnTimer(TimerHandle* timer)
 	{
 		MS_TRACE();
@@ -1137,5 +1145,12 @@ namespace RTC
 		MS_DEBUG_TAG(rtx, "requesting key frame [ssrc:%" PRIu32 "]", this->params.ssrc);
 
 		RequestKeyFrame();
+	}
+
+	inline void RtpStreamRecv::OnNackGeneratorPacketsUnrecoverable(size_t packetCount)
+	{
+		MS_TRACE();
+
+		PacketUnrecovered(packetCount);
 	}
 } // namespace RTC

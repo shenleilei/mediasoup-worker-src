@@ -74,6 +74,10 @@ table BaseStats {
     rtcp_expected_packets: uint64;
     rtcp_received_packets: uint64;
     rtcp_lost_packets: uint64;
+    newly_missing_packets: uint64;
+    repaired_packets: uint64;
+    retransmitted_packets: uint64;
+    unrecovered_packets: uint64;
 }
 
 table RecvStats {

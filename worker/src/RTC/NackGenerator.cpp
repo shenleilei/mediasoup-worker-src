@@ -195,6 +195,11 @@ namespace RTC
 		// Remove old packets.
 		auto it = this->nackList.lower_bound(seqEnd - MaxPacketAge);
 
+		if (it != this->nackList.begin())
+		{
+			MarkPacketsUnrecoverable(static_cast<size_t>(std::distance(this->nackList.begin(), it)));
+		}
+
 		this->nackList.erase(this->nackList.begin(), it);
 
 		// If the nack list is too large, remove packets from the nack list until
@@ -216,6 +221,7 @@ namespace RTC
 				MS_WARN_TAG(
 				  rtx, "NACK list full, clearing it and requesting a key frame [seqEnd:%" PRIu16 "]", seqEnd);
 
+				MarkPacketsUnrecoverable(this->nackList.size() + numNewNacks);
 				this->nackList.clear();
 				this->listener->OnNackGeneratorKeyFrameRequired();
 
@@ -255,6 +261,7 @@ namespace RTC
 			{
 				// We have found a keyframe that actually is newer than at least one
 				// packet in the nack list.
+				MarkPacketsUnrecoverable(static_cast<size_t>(std::distance(this->nackList.begin(), it)));
 				this->nackList.erase(this->nackList.begin(), it);
 
 				return true;
@@ -266,6 +273,19 @@ namespace RTC
 		}
 
 		return false;
+	}
+
+	void NackGenerator::MarkPacketsUnrecoverable(size_t packetCount)
+	{
+		MS_TRACE();
+
+		if (packetCount == 0u)
+		{
+			return;
+		}
+
+		this->unrecoverablePackets += packetCount;
+		this->listener->OnNackGeneratorPacketsUnrecoverable(packetCount);
 	}
 
 	std::vector<uint16_t> NackGenerator::GetNackBatch(NackFilter filter)
@@ -311,6 +331,7 @@ namespace RTC
 					  "]",
 					  seq);
 
+					MarkPacketsUnrecoverable(1u);
 					it = this->nackList.erase(it);
 				}
 				else
@@ -338,6 +359,7 @@ namespace RTC
 					  "]",
 					  seq);
 
+					MarkPacketsUnrecoverable(1u);
 					it = this->nackList.erase(it);
 				}
 				else

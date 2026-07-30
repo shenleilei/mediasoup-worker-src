@@ -100,7 +100,11 @@ namespace RTC
 		  this->rtcpLossWindowEndMs,
 		  this->rtcpExpectedPackets,
 		  this->rtcpReceivedPackets,
-		  this->rtcpLostPackets);
+		  this->rtcpLostPackets,
+		  this->newlyMissingPackets,
+		  this->repairedPackets,
+		  this->retransmittedPackets,
+		  this->unrecoveredPackets);
 
 		return FBS::RtpStream::CreateStats(
 		  builder, FBS::RtpStream::StatsData::BaseStats, baseStats.Union());
@@ -205,7 +209,7 @@ namespace RTC
 		}
 	}
 
-	bool RtpStream::UpdateSeq(RTC::RtpPacket* packet)
+	bool RtpStream::UpdateSeq(RTC::RtpPacket* packet, bool notifyGap)
 	{
 		MS_TRACE();
 
@@ -218,6 +222,12 @@ namespace RTC
 		//    maxSeq:65536, seq:0 => udelta:1
 		if (udelta < MaxDropout)
 		{
+			if (notifyGap && udelta > 1u)
+			{
+				UserOnSequenceNumberGap(
+				  static_cast<uint16_t>(this->maxSeq + 1u), seq, static_cast<uint16_t>(udelta - 1u));
+			}
+
 			// In order, with permissible gap.
 			if (seq < this->maxSeq)
 			{
@@ -277,6 +287,13 @@ namespace RTC
 		}
 
 		return true;
+	}
+
+	void RtpStream::PacketNewlyMissing(size_t packetCount)
+	{
+		MS_TRACE();
+
+		this->newlyMissingPackets += packetCount;
 	}
 
 	void RtpStream::UpdateScore(uint8_t score)
@@ -382,6 +399,7 @@ namespace RTC
 		MS_TRACE();
 
 		this->packetsRetransmitted++;
+		this->retransmittedPackets++;
 	}
 
 	void RtpStream::PacketRepaired(RTC::RtpPacket* /*packet*/)
@@ -389,6 +407,14 @@ namespace RTC
 		MS_TRACE();
 
 		this->packetsRepaired++;
+		this->repairedPackets++;
+	}
+
+	void RtpStream::PacketUnrecovered(size_t packetCount)
+	{
+		MS_TRACE();
+
+		this->unrecoveredPackets += packetCount;
 	}
 
 	inline void RtpStream::InitSeq(uint16_t seq)

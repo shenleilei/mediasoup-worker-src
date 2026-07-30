@@ -316,6 +316,11 @@ namespace RTC
 				this->rtcpLostPackets       = clampedLostInterval;
 			}
 
+			if (clampedLostInterval > 0u)
+			{
+				PacketNewlyMissing(clampedLostInterval);
+			}
+
 			this->receiverReportExpectedPrior = expected;
 			this->receiverReportLostPrior     = totalLost;
 			this->hasReceiverReportLossWindow = true;
