@@ -89,6 +89,10 @@ namespace RTC
 		{
 			return this->useRtpInactivityCheck;
 		}
+		uint64_t GetJitterUpdatedAtMs() const
+		{
+			return this->jitterUpdatedAtMs;
+		}
 
 	private:
 		void MarkRtpActivity();
@@ -156,6 +160,7 @@ namespace RTC
 		// Jitter in RTP timestamp units. As per spec it's kept as floating value
 		// although it's exposed as integer in the stats.
 		float jitter{ 0 };
+		uint64_t jitterUpdatedAtMs{ 0u };
 		uint8_t firSeqNumber{ 0u };
 		uint32_t reportedPacketLost{ 0u };
 		std::unique_ptr<RTC::NackGenerator> nackGenerator;

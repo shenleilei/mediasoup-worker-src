@@ -67,6 +67,8 @@ table BaseStats {
     abs_capture_timestamp_ms: uint64 = null;
     estimated_capture_clock_offset_ms: int64 = null;
     abs_capture_receive_delta_ms: int64 = null;
+    rtt_updated_at_ms: uint64;
+    score_updated_at_ms: uint64;
 }
 
 table RecvStats {
@@ -80,6 +82,7 @@ table RecvStats {
     last_rtp_activity_at_ms: uint64;
     rtp_activity_threshold_ms: uint32;
     rtp_activity_state_version: uint64;
+    jitter_updated_at_ms: uint64;
 }
 
 table SendStats {

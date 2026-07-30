@@ -137,6 +137,14 @@ namespace RTC
 		{
 			return this->rtt;
 		}
+		uint64_t GetRttUpdatedAtMs() const
+		{
+			return this->rttUpdatedAtMs;
+		}
+		uint64_t GetScoreUpdatedAtMs() const
+		{
+			return this->scoreUpdatedAtMs;
+		}
 		bool HasAbsCaptureTime() const
 		{
 			return this->hasAbsCaptureTime;
@@ -248,6 +256,7 @@ namespace RTC
 		// RTP timestamp in last Sender Report.
 		uint32_t lastSenderReportTs{ 0u };
 		float rtt{ 0.0f };
+		uint64_t rttUpdatedAtMs{ 0u };
 		bool hasAbsCaptureTime{ false };
 		uint64_t absCaptureTimeNtp{ 0u };
 		uint64_t absCaptureTimestampMs{ 0u };
@@ -261,6 +270,7 @@ namespace RTC
 	private:
 		// Score related.
 		uint8_t score{ 0u };
+		uint64_t scoreUpdatedAtMs{ 0u };
 		std::vector<uint8_t> scores;
 		// Whether at least a RTP packet has been received.
 		bool started{ false };

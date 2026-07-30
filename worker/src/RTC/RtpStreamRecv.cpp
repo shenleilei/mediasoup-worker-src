@@ -267,7 +267,8 @@ namespace RTC
 		  !this->useRtpInactivityCheck || !this->inactive,
 		  this->lastRtpActivityAtMs,
 		  static_cast<uint32_t>(this->rtpInactivityCheckInterval),
-		  this->rtpActivityStateVersion);
+		  this->rtpActivityStateVersion,
+		  this->jitterUpdatedAtMs);
 
 		return FBS::RtpStream::CreateStats(builder, FBS::RtpStream::StatsData::RecvStats, stats.Union());
 	}
@@ -673,6 +674,11 @@ namespace RTC
 		if (this->rtt <= 0.0f)
 		{
 			this->rtt = 0.0f;
+			this->rttUpdatedAtMs = 0u;
+		}
+		else
+		{
+			this->rttUpdatedAtMs = nowMs;
 		}
 
 		// Tell it to the NackGenerator.
@@ -792,8 +798,9 @@ namespace RTC
 		}
 
 		// NOTE: Based on https://github.com/versatica/mediasoup/issues/1018.
-		auto transit = static_cast<int>((DepLibUV::GetTimeMs() * GetClockRate() / 1000) - rtpTimestamp);
-		int d        = transit - this->transit;
+		const auto nowMs   = DepLibUV::GetTimeMs();
+		const auto transit = static_cast<int>((nowMs * GetClockRate() / 1000) - rtpTimestamp);
+		int d              = transit - this->transit;
 
 		// First transit calculation, save and return.
 		if (this->transit == 0)
@@ -811,6 +818,7 @@ namespace RTC
 		}
 
 		this->jitter += (1. / 16.) * (static_cast<float>(d) - this->jitter);
+		this->jitterUpdatedAtMs = nowMs;
 	}
 
 	void RtpStreamRecv::UpdateScore()

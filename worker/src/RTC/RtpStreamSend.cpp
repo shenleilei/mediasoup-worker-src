@@ -274,6 +274,11 @@ namespace RTC
 		if (this->rtt <= 0.0f)
 		{
 			this->rtt = 0.0f;
+			this->rttUpdatedAtMs = 0u;
+		}
+		else
+		{
+			this->rttUpdatedAtMs = nowMs;
 		}
 
 		this->packetsLost  = report->GetTotalLost();

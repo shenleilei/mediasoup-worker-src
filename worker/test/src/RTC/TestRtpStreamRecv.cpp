@@ -294,6 +294,10 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	RtpStreamRecv rtpStream(&listener, params, SendNackDelay, UseRtpInactivityCheck);
 
 	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+	REQUIRE(rtpStream.GetJitterUpdatedAtMs() == 0u);
+	packet->SetSequenceNumber(packet->GetSequenceNumber() + 1u);
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+	REQUIRE(rtpStream.GetJitterUpdatedAtMs() > 0u);
 
 	flatbuffers::FlatBufferBuilder builder;
 	auto statsOffset = rtpStream.FillBufferStats(builder);
@@ -314,6 +318,9 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(baseStats->absCaptureTimestampNtp().value() == 0x0102030405060708ULL);
 	REQUIRE(baseStats->estimatedCaptureClockOffset().has_value() == true);
 	REQUIRE(static_cast<uint64_t>(baseStats->estimatedCaptureClockOffset().value()) == 0xfffefdfcfbfaf9f8ULL);
+	REQUIRE(baseStats->rttUpdatedAtMs() == 0u);
+	REQUIRE(baseStats->scoreUpdatedAtMs() > 0u);
+	REQUIRE(recvStats->jitterUpdatedAtMs() == rtpStream.GetJitterUpdatedAtMs());
 	REQUIRE(recvStats->rtpActive() == true);
 	REQUIRE(recvStats->lastRtpActivityAtMs() > 0u);
 	REQUIRE(recvStats->rtpActivityThresholdMs() == 0u);

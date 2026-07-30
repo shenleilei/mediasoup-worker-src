@@ -18,7 +18,8 @@ namespace RTC
 
 	RtpStream::RtpStream(
 	  RTC::RtpStream::Listener* listener, RTC::RtpStream::Params& params, uint8_t initialScore)
-	  : listener(listener), params(params), score(initialScore), activeSinceMs(DepLibUV::GetTimeMs())
+	  : listener(listener), params(params), score(initialScore), scoreUpdatedAtMs(DepLibUV::GetTimeMs()),
+	    activeSinceMs(this->scoreUpdatedAtMs)
 	{
 		MS_TRACE();
 	}
@@ -92,7 +93,9 @@ namespace RTC
 		    ? flatbuffers::Optional<int64_t>(this->estimatedCaptureClockOffsetMs)
 		    : flatbuffers::nullopt,
 		  this->hasAbsCaptureTime ? flatbuffers::Optional<int64_t>(this->absCaptureReceiveDeltaMs)
-		                          : flatbuffers::nullopt);
+		                          : flatbuffers::nullopt,
+		  this->rttUpdatedAtMs,
+		  this->scoreUpdatedAtMs);
 
 		return FBS::RtpStream::CreateStats(
 		  builder, FBS::RtpStream::StatsData::BaseStats, baseStats.Union());
@@ -175,14 +178,16 @@ namespace RTC
 
 		if (this->score != score)
 		{
+			const auto nowMs = DepLibUV::GetTimeMs();
 			auto previousScore = this->score;
 
 			this->score = score;
+			this->scoreUpdatedAtMs = nowMs;
 
 			// If previous score was 0 (and new one is not 0) then update activeSinceMs.
 			if (previousScore == 0u)
 			{
-				this->activeSinceMs = DepLibUV::GetTimeMs();
+				this->activeSinceMs = nowMs;
 			}
 
 			// Notify the listener.
@@ -275,6 +280,7 @@ namespace RTC
 		}
 
 		auto previousScore = this->score;
+		const auto nowMs   = DepLibUV::GetTimeMs();
 
 		// Compute new effective score taking into accout entries in the histogram.
 		this->scores.push_back(score);
@@ -306,6 +312,7 @@ namespace RTC
 		// smarter.
 		// NOLINTNEXTLINE(clang-analyzer-core.DivideZero)
 		this->score = static_cast<uint8_t>(std::round(static_cast<double>(totalScore) / samples));
+		this->scoreUpdatedAtMs = nowMs;
 
 		// Call the listener if the global score has changed.
 		if (this->score != previousScore)
@@ -321,7 +328,7 @@ namespace RTC
 			// If previous score was 0 (and new one is not 0) then update activeSinceMs.
 			if (previousScore == 0u)
 			{
-				this->activeSinceMs = DepLibUV::GetTimeMs();
+				this->activeSinceMs = nowMs;
 			}
 
 			this->listener->OnRtpStreamScore(this, this->score, previousScore);
