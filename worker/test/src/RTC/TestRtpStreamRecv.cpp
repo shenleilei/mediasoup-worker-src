@@ -292,6 +292,10 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(baseStats->absCaptureTimestampNtp().value() == 0x0102030405060708ULL);
 	REQUIRE(baseStats->estimatedCaptureClockOffset().has_value() == true);
 	REQUIRE(static_cast<uint64_t>(baseStats->estimatedCaptureClockOffset().value()) == 0xfffefdfcfbfaf9f8ULL);
+	REQUIRE(recvStats->rtpActive() == true);
+	REQUIRE(recvStats->lastRtpActivityAtMs() > 0u);
+	REQUIRE(recvStats->rtpActivityThresholdMs() == 0u);
+	REQUIRE(recvStats->rtpActivityStateVersion() == 1u);
 
 	delete packet;
 }
@@ -348,12 +352,14 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 
 		REQUIRE(interval == 1500u);
 		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(rtpStream.testGetRtpActivityStateVersion() == 1u);
 		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == true);
 
 		rtpStream.testSetLastRtpActivityAtMs(DepLibUV::GetTimeMs() - interval + 10u);
 		rtpStream.testFireRtpInactivityTimer();
 
 		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(rtpStream.testGetRtpActivityStateVersion() == 1u);
 		REQUIRE(listener.scores.empty());
 		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == true);
 
@@ -361,6 +367,7 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		rtpStream.testFireRtpInactivityTimer();
 
 		REQUIRE(rtpStream.GetScore() == 0u);
+		REQUIRE(rtpStream.testGetRtpActivityStateVersion() == 2u);
 		REQUIRE(listener.scores.size() == 1u);
 		const std::pair<uint8_t, uint8_t> inactiveScore{ 10u, 0u };
 		REQUIRE(listener.scores.back() == inactiveScore);
@@ -370,6 +377,7 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		REQUIRE(rtpStream.ReceivePacket(packet) == true);
 
 		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(rtpStream.testGetRtpActivityStateVersion() == 3u);
 		REQUIRE(listener.scores.size() == 2u);
 		const std::pair<uint8_t, uint8_t> activeScore{ 0u, 10u };
 		REQUIRE(listener.scores.back() == activeScore);
@@ -381,6 +389,7 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		REQUIRE(rtpStream.ReceivePacket(packet) == true);
 		REQUIRE(rtpStream.testGetLastRtpActivityAtMs() >= firstActivityAtMs);
 		REQUIRE(rtpStream.GetScore() == 10u);
+		REQUIRE(rtpStream.testGetRtpActivityStateVersion() == 3u);
 	}
 
 	delete packet;

@@ -97,6 +97,10 @@ namespace RTC
 		{
 			return this->lastRtpActivityAtMs;
 		}
+		uint64_t testGetRtpActivityStateVersion() const
+		{
+			return this->rtpActivityStateVersion;
+		}
 		void testSetLastRtpActivityAtMs(uint64_t value)
 		{
 			this->lastRtpActivityAtMs = value;
@@ -150,6 +154,7 @@ namespace RTC
 		TimerHandle* inactivityCheckPeriodicTimer{ nullptr };
 		uint64_t rtpInactivityCheckInterval{ 0u };
 		uint64_t lastRtpActivityAtMs{ 0u };
+		uint64_t rtpActivityStateVersion{ 1u };
 		bool inactive{ false };
 		// Valid media + valid RTX.
 		TransmissionCounter transmissionCounter;

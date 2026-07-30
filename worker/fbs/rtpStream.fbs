@@ -76,6 +76,10 @@ table RecvStats {
     byte_count: uint64;
     bitrate: uint32;
     bitrate_by_layer: [BitrateByLayer] (required);
+    rtp_active: bool = true;
+    last_rtp_activity_at_ms: uint64;
+    rtp_activity_threshold_ms: uint32;
+    rtp_activity_state_version: uint64;
 }
 
 table SendStats {

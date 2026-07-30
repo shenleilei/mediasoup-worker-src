@@ -263,7 +263,11 @@ namespace RTC
 		  this->transmissionCounter.GetPacketCount(),
 		  this->transmissionCounter.GetBytes(),
 		  this->transmissionCounter.GetBitrate(nowMs),
-		  &bitrateByLayer);
+		  &bitrateByLayer,
+		  !this->useRtpInactivityCheck || !this->inactive,
+		  this->lastRtpActivityAtMs,
+		  static_cast<uint32_t>(this->rtpInactivityCheckInterval),
+		  this->rtpActivityStateVersion);
 
 		return FBS::RtpStream::CreateStats(builder, FBS::RtpStream::StatsData::RecvStats, stats.Union());
 	}
@@ -756,6 +760,7 @@ namespace RTC
 		if (this->inactive)
 		{
 			this->inactive = false;
+			++this->rtpActivityStateVersion;
 
 			ResetScore(10, /*notify*/ true);
 		}
@@ -952,7 +957,11 @@ namespace RTC
 				return;
 			}
 
-			this->inactive = true;
+			if (!this->inactive)
+			{
+				this->inactive = true;
+				++this->rtpActivityStateVersion;
+			}
 
 			if (GetScore() != 0)
 			{
