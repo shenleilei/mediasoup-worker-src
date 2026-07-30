@@ -358,6 +358,261 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	delete packet;
 }
 
+SCENARIO("receive RTP stats cover normal video, no RTCP and DTX inactivity", "[rtp][rtpstream][stats]")
+{
+	class RtpStreamRecvListener : public RtpStreamRecv::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t score, uint8_t previousScore) override
+		{
+			this->scores.emplace_back(previousScore, score);
+		}
+
+		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamNeedWorstRemoteFractionLost(
+		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
+		{
+		}
+
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool rtpActive,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t lastRtpActivityAtMs,
+		  uint32_t rtpActivityThresholdMs,
+		  uint64_t rtpActivityStateVersion) override
+		{
+			this->activityTransitions.push_back(
+			  { rtpActive, lastRtpActivityAtMs, rtpActivityThresholdMs, rtpActivityStateVersion });
+		}
+
+	public:
+		struct ActivityTransition
+		{
+			bool rtpActive{ false };
+			uint64_t lastRtpActivityAtMs{ 0u };
+			uint32_t rtpActivityThresholdMs{ 0u };
+			uint64_t rtpActivityStateVersion{ 0u };
+		};
+
+		std::vector<std::pair<uint8_t, uint8_t>> scores;
+		std::vector<ActivityTransition> activityTransitions;
+	};
+
+	// clang-format off
+	uint8_t buffer[] =
+	{
+		0x80, 0x01, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x04,
+		0x00, 0x00, 0x00, 0x05
+	};
+	// clang-format on
+
+	RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+
+	if (!packet)
+	{
+		FAIL("not a RTP packet");
+	}
+
+	RtpStream::Params params;
+
+	params.ssrc            = packet->GetSsrc();
+	params.payloadType     = packet->GetPayloadType();
+	params.clockRate       = 90000;
+	params.mimeType.type   = RTC::RtpCodecMimeType::Type::VIDEO;
+	params.mimeType.subtype = RTC::RtpCodecMimeType::Subtype::VP8;
+	params.mimeType.UpdateMimeType();
+
+	RtpStreamRecvListener listener;
+	RtpStreamRecv rtpStream(&listener, params, SendNackDelay, /*useRtpInactivityCheck*/ true);
+
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+	packet->SetSequenceNumber(2);
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+
+	flatbuffers::FlatBufferBuilder activeBuilder;
+	auto activeStatsOffset = rtpStream.FillBufferStats(activeBuilder);
+	activeBuilder.Finish(activeStatsOffset);
+
+	const auto* activeStats = flatbuffers::GetRoot<FBS::RtpStream::Stats>(activeBuilder.GetBufferPointer());
+	REQUIRE(activeStats);
+	const auto* activeRecvStats = activeStats->data_as_RecvStats();
+	REQUIRE(activeRecvStats);
+	REQUIRE(activeRecvStats->base());
+	const auto* activeBaseStats = activeRecvStats->base()->data_as_BaseStats();
+	REQUIRE(activeBaseStats);
+
+	REQUIRE(activeRecvStats->packetCount() == 2u);
+	REQUIRE(activeRecvStats->byteCount() > 0u);
+	REQUIRE(activeRecvStats->rtpActive() == true);
+	REQUIRE(activeRecvStats->rtpActivityStateVersion() == 1u);
+	REQUIRE(activeBaseStats->rttUpdatedAtMs() == 0u);
+	REQUIRE(activeBaseStats->rtcpLossWindowStartMs() == 0u);
+	REQUIRE(activeBaseStats->rtcpLossWindowEndMs() == 0u);
+	REQUIRE(activeBaseStats->rtcpExpectedPackets() == 0u);
+	REQUIRE(activeBaseStats->rtcpReceivedPackets() == 0u);
+	REQUIRE(activeBaseStats->rtcpLostPackets() == 0u);
+
+	const auto interval = rtpStream.testGetRtpInactivityCheckInterval();
+	rtpStream.testSetLastRtpActivityAtMs(DepLibUV::GetTimeMs() - interval);
+	rtpStream.testFireRtpInactivityTimer();
+
+	REQUIRE(listener.scores.size() == 1u);
+	const std::pair<uint8_t, uint8_t> inactiveScore{ 10u, 0u };
+	REQUIRE(listener.scores.back() == inactiveScore);
+	REQUIRE(listener.activityTransitions.size() == 1u);
+	REQUIRE(listener.activityTransitions.back().rtpActive == false);
+	REQUIRE(listener.activityTransitions.back().rtpActivityThresholdMs == interval);
+	REQUIRE(listener.activityTransitions.back().rtpActivityStateVersion == 2u);
+
+	flatbuffers::FlatBufferBuilder inactiveBuilder;
+	auto inactiveStatsOffset = rtpStream.FillBufferStats(inactiveBuilder);
+	inactiveBuilder.Finish(inactiveStatsOffset);
+
+	const auto* inactiveStats = flatbuffers::GetRoot<FBS::RtpStream::Stats>(inactiveBuilder.GetBufferPointer());
+	REQUIRE(inactiveStats);
+	const auto* inactiveRecvStats = inactiveStats->data_as_RecvStats();
+	REQUIRE(inactiveRecvStats);
+	REQUIRE(inactiveRecvStats->base());
+	const auto* inactiveBaseStats = inactiveRecvStats->base()->data_as_BaseStats();
+	REQUIRE(inactiveBaseStats);
+
+	REQUIRE(inactiveRecvStats->rtpActive() == false);
+	REQUIRE(inactiveRecvStats->rtpActivityStateVersion() == 2u);
+	REQUIRE(inactiveRecvStats->lastRtpActivityAtMs() == listener.activityTransitions.back().lastRtpActivityAtMs);
+	REQUIRE(inactiveRecvStats->rtpActivityThresholdMs() == interval);
+	REQUIRE(inactiveBaseStats->score() == 0u);
+	REQUIRE(inactiveBaseStats->rttUpdatedAtMs() == 0u);
+	REQUIRE(inactiveBaseStats->rtcpLossWindowStartMs() == 0u);
+	REQUIRE(inactiveBaseStats->rtcpLossWindowEndMs() == 0u);
+	REQUIRE(inactiveRecvStats->packetCount() == activeRecvStats->packetCount());
+	REQUIRE(inactiveRecvStats->byteCount() == activeRecvStats->byteCount());
+
+	delete packet;
+
+	// Must run the loop to wait for UV timers and close them.
+	DepLibUV::RunLoop();
+}
+
+SCENARIO("RTP sequence restart clears interval windows without rewriting cumulative stats", "[rtp][rtpstream][stats]")
+{
+	class RtpStreamRecvListener : public RtpStreamRecv::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+		}
+
+		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamNeedWorstRemoteFractionLost(
+		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
+		{
+		}
+
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool /*rtpActive*/,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t /*lastRtpActivityAtMs*/,
+		  uint32_t /*rtpActivityThresholdMs*/,
+		  uint64_t /*rtpActivityStateVersion*/) override
+		{
+		}
+	};
+
+	// clang-format off
+	uint8_t buffer[] =
+	{
+		0x80, 0x01, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x04,
+		0x00, 0x00, 0x00, 0x05
+	};
+	// clang-format on
+
+	RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+
+	if (!packet)
+	{
+		FAIL("not a RTP packet");
+	}
+
+	RtpStream::Params params;
+
+	params.ssrc      = packet->GetSsrc();
+	params.clockRate = 90000;
+	params.useNack   = true;
+	params.usePli    = true;
+
+	RtpStreamRecvListener listener;
+	RtpStreamRecv rtpStream(&listener, params, SendNackDelay, UseRtpInactivityCheck);
+
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+	packet->SetSequenceNumber(2);
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+
+	auto* report = rtpStream.GetRtcpReceiverReport();
+	REQUIRE(report);
+	delete report;
+	REQUIRE(rtpStream.GetRtcpLossWindowStartMs() > 0u);
+	REQUIRE(rtpStream.GetRtcpLossWindowEndMs() >= rtpStream.GetRtcpLossWindowStartMs());
+	REQUIRE(rtpStream.GetRtcpExpectedPackets() == 2u);
+	REQUIRE(rtpStream.GetRtcpReceivedPackets() == 2u);
+	REQUIRE(rtpStream.GetRtcpLostPackets() == 0u);
+
+	packet->SetSequenceNumber(40000);
+	REQUIRE(rtpStream.ReceivePacket(packet) == false);
+
+	packet->SetSequenceNumber(40001);
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+
+	REQUIRE(rtpStream.GetNewlyMissingPackets() == 0u);
+	REQUIRE(rtpStream.GetRetransmittedPackets() == 0u);
+	REQUIRE(rtpStream.GetRepairedPackets() == 0u);
+	REQUIRE(rtpStream.GetUnrecoveredPackets() == 0u);
+	REQUIRE(rtpStream.GetRtcpLossWindowStartMs() == 0u);
+	REQUIRE(rtpStream.GetRtcpLossWindowEndMs() == 0u);
+	REQUIRE(rtpStream.GetRtcpExpectedPackets() == 0u);
+	REQUIRE(rtpStream.GetRtcpReceivedPackets() == 0u);
+	REQUIRE(rtpStream.GetRtcpLostPackets() == 0u);
+
+	flatbuffers::FlatBufferBuilder builder;
+	auto statsOffset = rtpStream.FillBufferStats(builder);
+	builder.Finish(statsOffset);
+
+	const auto* stats = flatbuffers::GetRoot<FBS::RtpStream::Stats>(builder.GetBufferPointer());
+	REQUIRE(stats);
+	const auto* recvStats = stats->data_as_RecvStats();
+	REQUIRE(recvStats);
+	REQUIRE(recvStats->base());
+	const auto* baseStats = recvStats->base()->data_as_BaseStats();
+	REQUIRE(baseStats);
+
+	REQUIRE(baseStats->packetsDiscarded() == 1u);
+	REQUIRE(baseStats->rtcpLossWindowStartMs() == 0u);
+	REQUIRE(baseStats->rtcpLossWindowEndMs() == 0u);
+	REQUIRE(baseStats->rtcpExpectedPackets() == 0u);
+	REQUIRE(baseStats->rtcpReceivedPackets() == 0u);
+	REQUIRE(baseStats->rtcpLostPackets() == 0u);
+	REQUIRE(baseStats->newlyMissingPackets() == 0u);
+	REQUIRE(baseStats->repairedPackets() == 0u);
+	REQUIRE(baseStats->retransmittedPackets() == 0u);
+	REQUIRE(baseStats->unrecoveredPackets() == 0u);
+
+	delete packet;
+
+	// Must run the loop to wait for UV timers and close them.
+	DepLibUV::RunLoop();
+}
+
 SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet restart", "[rtp][rtpstream][timer]")
 {
 	class RtpStreamRecvListener : public RtpStreamRecv::Listener
