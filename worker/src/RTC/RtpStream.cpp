@@ -95,7 +95,12 @@ namespace RTC
 		  this->hasAbsCaptureTime ? flatbuffers::Optional<int64_t>(this->absCaptureReceiveDeltaMs)
 		                          : flatbuffers::nullopt,
 		  this->rttUpdatedAtMs,
-		  this->scoreUpdatedAtMs);
+		  this->scoreUpdatedAtMs,
+		  this->rtcpLossWindowStartMs,
+		  this->rtcpLossWindowEndMs,
+		  this->rtcpExpectedPackets,
+		  this->rtcpReceivedPackets,
+		  this->rtcpLostPackets);
 
 		return FBS::RtpStream::CreateStats(
 		  builder, FBS::RtpStream::StatsData::BaseStats, baseStats.Union());
@@ -136,6 +141,7 @@ namespace RTC
 		MS_TRACE();
 
 		const uint16_t seq = packet->GetSequenceNumber();
+		const auto nowMs   = DepLibUV::GetTimeMs();
 
 		// If this is the first packet seen, initialize stuff.
 		if (!this->started)
@@ -145,7 +151,8 @@ namespace RTC
 			this->started     = true;
 			this->maxSeq      = seq - 1;
 			this->maxPacketTs = packet->GetTimestamp();
-			this->maxPacketMs = DepLibUV::GetTimeMs();
+			this->maxPacketMs = nowMs;
+			this->firstPacketMs = nowMs;
 		}
 
 		// If not a valid packet ignore it.
@@ -236,10 +243,13 @@ namespace RTC
 				  packet->GetSsrc(),
 				  packet->GetSequenceNumber());
 
+				const auto nowMs = DepLibUV::GetTimeMs();
+
 				InitSeq(seq);
 
 				this->maxPacketTs = packet->GetTimestamp();
-				this->maxPacketMs = DepLibUV::GetTimeMs();
+				this->maxPacketMs = nowMs;
+				this->firstPacketMs = nowMs;
 
 				// Notify the subclass about it.
 				UserOnSequenceNumberReset();

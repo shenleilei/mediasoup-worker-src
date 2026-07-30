@@ -73,6 +73,9 @@ namespace RTC
 		// Wallclock time representing the most recent receiver reference timestamp
 		// arrival.
 		uint64_t lastRrReceivedMs{ 0u };
+		uint32_t receiverReportExpectedPrior{ 0u };
+		int32_t receiverReportLostPrior{ 0 };
+		bool hasReceiverReportLossWindow{ false };
 	};
 } // namespace RTC
 

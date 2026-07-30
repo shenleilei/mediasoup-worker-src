@@ -78,11 +78,12 @@ namespace RTC
 
 		auto baseStats = RTC::RtpStream::FillBufferStats(builder);
 		auto stats     = FBS::RtpStream::CreateSendStats(
-      builder,
-      baseStats,
-      this->transmissionCounter.GetPacketCount(),
-      this->transmissionCounter.GetBytes(),
-      this->transmissionCounter.GetBitrate(nowMs));
+		  builder,
+		  baseStats,
+		  this->transmissionCounter.GetPacketCount(),
+		  this->transmissionCounter.GetBytes(),
+		  this->transmissionCounter.GetBitrate(nowMs),
+		  static_cast<uint32_t>(this->transmissionCounter.GetWindowSizeMs()));
 
 		return FBS::RtpStream::CreateStats(builder, FBS::RtpStream::StatsData::SendStats, stats.Union());
 	}
@@ -283,6 +284,42 @@ namespace RTC
 
 		this->packetsLost  = report->GetTotalLost();
 		this->fractionLost = report->GetFractionLost();
+
+		const uint32_t lastSeq = report->GetLastSeq();
+		if (this->firstPacketMs > 0u && lastSeq >= this->baseSeq)
+		{
+			const uint32_t expected = lastSeq - this->baseSeq + 1u;
+			const bool receiverReportReset =
+			  this->hasReceiverReportLossWindow && expected < this->receiverReportExpectedPrior;
+			const uint32_t expectedInterval =
+			  this->hasReceiverReportLossWindow && !receiverReportReset
+			    ? expected - this->receiverReportExpectedPrior
+			    : expected;
+			const int32_t totalLost = report->GetTotalLost();
+			const int32_t lostInterval = this->hasReceiverReportLossWindow && !receiverReportReset
+			                               ? totalLost - this->receiverReportLostPrior
+			                               : totalLost;
+			const uint64_t clampedLostInterval =
+			  lostInterval > 0 ? static_cast<uint64_t>(lostInterval) : 0u;
+			const uint64_t receivedInterval = expectedInterval >= clampedLostInterval
+			                                    ? expectedInterval - clampedLostInterval
+			                                    : 0u;
+			const uint64_t lossWindowStartMs =
+			  this->rtcpLossWindowEndMs > 0u ? this->rtcpLossWindowEndMs : this->firstPacketMs;
+
+			if (lossWindowStartMs > 0u && nowMs >= lossWindowStartMs)
+			{
+				this->rtcpLossWindowStartMs = lossWindowStartMs;
+				this->rtcpLossWindowEndMs   = nowMs;
+				this->rtcpExpectedPackets   = expectedInterval;
+				this->rtcpReceivedPackets   = receivedInterval;
+				this->rtcpLostPackets       = clampedLostInterval;
+			}
+
+			this->receiverReportExpectedPrior = expected;
+			this->receiverReportLostPrior     = totalLost;
+			this->hasReceiverReportLossWindow = true;
+		}
 
 		// Update the score with the received RR.
 		UpdateScore(report);
@@ -705,5 +742,14 @@ namespace RTC
 		{
 			this->retransmissionBuffer->Clear();
 		}
+
+		this->receiverReportExpectedPrior = 0u;
+		this->receiverReportLostPrior     = 0;
+		this->hasReceiverReportLossWindow = false;
+		this->rtcpLossWindowStartMs       = 0u;
+		this->rtcpLossWindowEndMs         = 0u;
+		this->rtcpExpectedPackets         = 0u;
+		this->rtcpReceivedPackets         = 0u;
+		this->rtcpLostPackets             = 0u;
 	}
 } // namespace RTC

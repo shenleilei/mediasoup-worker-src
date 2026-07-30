@@ -32,6 +32,10 @@ namespace RTC
 		{
 			return this->bytes;
 		}
+		size_t GetWindowSizeMs() const
+		{
+			return this->windowSizeMs;
+		}
 
 	private:
 		void RemoveOldData(uint64_t nowMs);
@@ -105,6 +109,10 @@ namespace RTC
 		size_t GetBytes() const
 		{
 			return this->rate.GetBytes();
+		}
+		size_t GetWindowSizeMs() const
+		{
+			return this->rate.GetWindowSizeMs();
 		}
 
 	private:

@@ -69,6 +69,11 @@ table BaseStats {
     abs_capture_receive_delta_ms: int64 = null;
     rtt_updated_at_ms: uint64;
     score_updated_at_ms: uint64;
+    rtcp_loss_window_start_ms: uint64;
+    rtcp_loss_window_end_ms: uint64;
+    rtcp_expected_packets: uint64;
+    rtcp_received_packets: uint64;
+    rtcp_lost_packets: uint64;
 }
 
 table RecvStats {
@@ -83,6 +88,7 @@ table RecvStats {
     rtp_activity_threshold_ms: uint32;
     rtp_activity_state_version: uint64;
     jitter_updated_at_ms: uint64;
+    reported_bitrate_window_ms: uint32;
 }
 
 table SendStats {
@@ -90,4 +96,5 @@ table SendStats {
     packet_count: uint64;
     byte_count: uint64;
     bitrate: uint32;
+    reported_bitrate_window_ms: uint32;
 }

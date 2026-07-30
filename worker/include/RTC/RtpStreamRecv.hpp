@@ -44,6 +44,7 @@ namespace RTC
 			uint32_t GetLayerBitrate(uint64_t nowMs, uint8_t spatialLayer, uint8_t temporalLayer);
 			size_t GetPacketCount() const;
 			size_t GetBytes() const;
+			size_t GetWindowSizeMs() const;
 
 		private:
 			std::vector<std::vector<RTC::RtpDataCounter>> spatialLayerCounters;

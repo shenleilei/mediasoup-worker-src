@@ -187,6 +187,18 @@ namespace RTC
 		return bytes;
 	}
 
+	size_t RtpStreamRecv::TransmissionCounter::GetWindowSizeMs() const
+	{
+		MS_TRACE();
+
+		if (this->spatialLayerCounters.empty() || this->spatialLayerCounters[0].empty())
+		{
+			return 0u;
+		}
+
+		return this->spatialLayerCounters[0][0].GetWindowSizeMs();
+	}
+
 	/* Instance methods. */
 
 	RtpStreamRecv::RtpStreamRecv(
@@ -268,7 +280,8 @@ namespace RTC
 		  this->lastRtpActivityAtMs,
 		  static_cast<uint32_t>(this->rtpInactivityCheckInterval),
 		  this->rtpActivityStateVersion,
-		  this->jitterUpdatedAtMs);
+		  this->jitterUpdatedAtMs,
+		  static_cast<uint32_t>(this->transmissionCounter.GetWindowSizeMs()));
 
 		return FBS::RtpStream::CreateStats(builder, FBS::RtpStream::StatsData::RecvStats, stats.Union());
 	}
@@ -496,6 +509,9 @@ namespace RTC
 		report->SetSsrc(GetSsrc());
 
 		const uint32_t prevPacketsLost = this->packetsLost;
+		const auto nowMs = DepLibUV::GetTimeMs();
+		const uint64_t lossWindowStartMs =
+		  this->rtcpLossWindowEndMs > 0u ? this->rtcpLossWindowEndMs : this->firstPacketMs;
 
 		// Calculate Packets Expected and Lost.
 		auto expected = GetExpectedPackets();
@@ -522,6 +538,16 @@ namespace RTC
 		this->receivedPrior = this->mediaTransmissionCounter.GetPacketCount();
 
 		const int32_t lostInterval = expectedInterval - receivedInterval;
+		const uint32_t clampedLostInterval = lostInterval > 0 ? static_cast<uint32_t>(lostInterval) : 0u;
+
+		if (lossWindowStartMs > 0u && nowMs >= lossWindowStartMs)
+		{
+			this->rtcpLossWindowStartMs = lossWindowStartMs;
+			this->rtcpLossWindowEndMs   = nowMs;
+			this->rtcpExpectedPackets   = expectedInterval;
+			this->rtcpReceivedPackets   = receivedInterval;
+			this->rtcpLostPackets       = clampedLostInterval;
+		}
 
 		if (expectedInterval > 0u && (this->packetsLost > prevPacketsLost + 32u || lostInterval > 32))
 		{
@@ -548,7 +574,8 @@ namespace RTC
 		}
 		else
 		{
-			this->fractionLost = std::round((static_cast<double>(lostInterval << 8) / expectedInterval));
+			this->fractionLost =
+			  std::round((static_cast<double>(clampedLostInterval << 8) / expectedInterval));
 		}
 
 		// Worst remote fraction lost is not worse than local one.
@@ -577,7 +604,7 @@ namespace RTC
 		if (this->lastSrReceived != 0)
 		{
 			// Get delay in milliseconds.
-			auto delayMs = static_cast<uint32_t>(DepLibUV::GetTimeMs() - this->lastSrReceived);
+			auto delayMs = static_cast<uint32_t>(nowMs - this->lastSrReceived);
 			// Express delay in units of 1/65536 seconds.
 			uint32_t dlsr = (delayMs / 1000) << 16;
 
@@ -956,7 +983,19 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		// Nothing to do.
+		this->expectedPrior      = 0u;
+		this->expectedPriorScore = 0u;
+		this->receivedPrior      = 0u;
+		this->receivedPriorScore = 0u;
+		this->reportedPacketLost = 0u;
+		this->packetsLost        = 0u;
+		this->fractionLost       = 0u;
+
+		this->rtcpLossWindowStartMs = 0u;
+		this->rtcpLossWindowEndMs   = 0u;
+		this->rtcpExpectedPackets   = 0u;
+		this->rtcpReceivedPackets   = 0u;
+		this->rtcpLostPackets       = 0u;
 	}
 
 	inline void RtpStreamRecv::OnTimer(TimerHandle* timer)

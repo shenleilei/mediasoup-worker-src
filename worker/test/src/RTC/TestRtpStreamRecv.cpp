@@ -298,6 +298,14 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	packet->SetSequenceNumber(packet->GetSequenceNumber() + 1u);
 	REQUIRE(rtpStream.ReceivePacket(packet) == true);
 	REQUIRE(rtpStream.GetJitterUpdatedAtMs() > 0u);
+	auto* report = rtpStream.GetRtcpReceiverReport();
+	REQUIRE(report);
+	delete report;
+	REQUIRE(rtpStream.GetRtcpLossWindowStartMs() > 0u);
+	REQUIRE(rtpStream.GetRtcpLossWindowEndMs() >= rtpStream.GetRtcpLossWindowStartMs());
+	REQUIRE(rtpStream.GetRtcpExpectedPackets() == 2u);
+	REQUIRE(rtpStream.GetRtcpReceivedPackets() == 2u);
+	REQUIRE(rtpStream.GetRtcpLostPackets() == 0u);
 
 	flatbuffers::FlatBufferBuilder builder;
 	auto statsOffset = rtpStream.FillBufferStats(builder);
@@ -320,7 +328,13 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(static_cast<uint64_t>(baseStats->estimatedCaptureClockOffset().value()) == 0xfffefdfcfbfaf9f8ULL);
 	REQUIRE(baseStats->rttUpdatedAtMs() == 0u);
 	REQUIRE(baseStats->scoreUpdatedAtMs() > 0u);
+	REQUIRE(baseStats->rtcpLossWindowStartMs() == rtpStream.GetRtcpLossWindowStartMs());
+	REQUIRE(baseStats->rtcpLossWindowEndMs() == rtpStream.GetRtcpLossWindowEndMs());
+	REQUIRE(baseStats->rtcpExpectedPackets() == 2u);
+	REQUIRE(baseStats->rtcpReceivedPackets() == 2u);
+	REQUIRE(baseStats->rtcpLostPackets() == 0u);
 	REQUIRE(recvStats->jitterUpdatedAtMs() == rtpStream.GetJitterUpdatedAtMs());
+	REQUIRE(recvStats->reportedBitrateWindowMs() == 2500u);
 	REQUIRE(recvStats->rtpActive() == true);
 	REQUIRE(recvStats->lastRtpActivityAtMs() > 0u);
 	REQUIRE(recvStats->rtpActivityThresholdMs() == 0u);

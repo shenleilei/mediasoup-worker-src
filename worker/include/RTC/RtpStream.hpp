@@ -145,6 +145,26 @@ namespace RTC
 		{
 			return this->scoreUpdatedAtMs;
 		}
+		uint64_t GetRtcpLossWindowStartMs() const
+		{
+			return this->rtcpLossWindowStartMs;
+		}
+		uint64_t GetRtcpLossWindowEndMs() const
+		{
+			return this->rtcpLossWindowEndMs;
+		}
+		uint64_t GetRtcpExpectedPackets() const
+		{
+			return this->rtcpExpectedPackets;
+		}
+		uint64_t GetRtcpReceivedPackets() const
+		{
+			return this->rtcpReceivedPackets;
+		}
+		uint64_t GetRtcpLostPackets() const
+		{
+			return this->rtcpLostPackets;
+		}
 		bool HasAbsCaptureTime() const
 		{
 			return this->hasAbsCaptureTime;
@@ -238,8 +258,15 @@ namespace RTC
 		uint32_t maxPacketTs{ 0u };
 		// When the packet with highest timestammp was seen.
 		uint64_t maxPacketMs{ 0u };
+		// When the first packet in the current sequence epoch was seen.
+		uint64_t firstPacketMs{ 0u };
 		uint32_t packetsLost{ 0u };
 		uint8_t fractionLost{ 0u };
+		uint64_t rtcpLossWindowStartMs{ 0u };
+		uint64_t rtcpLossWindowEndMs{ 0u };
+		uint64_t rtcpExpectedPackets{ 0u };
+		uint64_t rtcpReceivedPackets{ 0u };
+		uint64_t rtcpLostPackets{ 0u };
 		size_t packetsDiscarded{ 0u };
 		size_t packetsRetransmitted{ 0u };
 		size_t packetsRepaired{ 0u };
