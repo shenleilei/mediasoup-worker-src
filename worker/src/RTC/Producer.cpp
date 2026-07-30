@@ -1527,6 +1527,46 @@ namespace RTC
 		  notification);
 	}
 
+	inline void Producer::EmitRtpActivityTransition(
+	  RTC::RtpStreamRecv* rtpStream,
+	  bool rtpActive,
+	  uint64_t transitionAtMs,
+	  uint64_t workerEventAtMs,
+	  uint64_t lastRtpActivityAtMs,
+	  uint32_t rtpActivityThresholdMs,
+	  uint64_t rtpActivityStateVersion) const
+	{
+		MS_TRACE();
+
+		if (!rtpStream)
+		{
+			return;
+		}
+
+		auto& builder = this->shared->channelNotifier->GetBufferBuilder();
+		const auto rtxSsrc = rtpStream->HasRtx()
+		                       ? flatbuffers::Optional<uint32_t>(rtpStream->GetRtxSsrc())
+		                       : flatbuffers::nullopt;
+		auto notification = FBS::Producer::CreateRtpActivityTransitionNotificationDirect(
+		  builder,
+		  rtpStream->GetEncodingIdx(),
+		  rtpStream->GetSsrc(),
+		  !rtpStream->GetRid().empty() ? rtpStream->GetRid().c_str() : nullptr,
+		  rtxSsrc,
+		  rtpActive,
+		  rtpActivityStateVersion,
+		  transitionAtMs,
+		  workerEventAtMs,
+		  lastRtpActivityAtMs,
+		  rtpActivityThresholdMs);
+
+		this->shared->channelNotifier->Emit(
+		  this->id,
+		  FBS::Notification::Event::PRODUCER_RTP_ACTIVITY_TRANSITION,
+		  FBS::Notification::Body::Producer_RtpActivityTransitionNotification,
+		  notification);
+	}
+
 	inline void Producer::EmitTraceEventRtpAndKeyFrameTypes(RTC::RtpPacket* packet, bool isRtx) const
 	{
 		MS_TRACE();
@@ -1752,6 +1792,25 @@ namespace RTC
 
 		// Notify the listener.
 		this->listener->OnProducerNeedWorstRemoteFractionLost(this, mappedSsrc, worstRemoteFractionLost);
+	}
+
+	inline void Producer::OnRtpStreamRtpActivityTransition(
+	  RTC::RtpStreamRecv* rtpStream,
+	  bool rtpActive,
+	  uint64_t transitionAtMs,
+	  uint64_t workerEventAtMs,
+	  uint64_t lastRtpActivityAtMs,
+	  uint32_t rtpActivityThresholdMs,
+	  uint64_t rtpActivityStateVersion)
+	{
+		EmitRtpActivityTransition(
+		  rtpStream,
+		  rtpActive,
+		  transitionAtMs,
+		  workerEventAtMs,
+		  lastRtpActivityAtMs,
+		  rtpActivityThresholdMs,
+		  rtpActivityStateVersion);
 	}
 
 	inline void Producer::OnKeyFrameNeeded(

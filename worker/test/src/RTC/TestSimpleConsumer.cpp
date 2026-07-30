@@ -551,6 +551,17 @@ namespace
 		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
 		{
 		}
+
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool /*rtpActive*/,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t /*lastRtpActivityAtMs*/,
+		  uint32_t /*rtpActivityThresholdMs*/,
+		  uint64_t /*rtpActivityStateVersion*/) override
+		{
+		}
 	};
 
 	const FBS::Transport::ProduceRequest* BuildProduceRequest(

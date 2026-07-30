@@ -56,6 +56,19 @@ table VideoOrientationChangeNotification {
     rotation: uint16;
 }
 
+table RtpActivityTransitionNotification {
+    encoding_idx: uint32;
+    ssrc: uint32;
+    rid: string;
+    rtx_ssrc: uint32 = null;
+    rtp_active: bool;
+    rtp_activity_state_version: uint64;
+    transition_at_ms: uint64;
+    worker_event_at_ms: uint64;
+    last_rtp_activity_at_ms: uint64;
+    rtp_activity_threshold_ms: uint32;
+}
+
 union TraceInfo {
     KeyFrameTraceInfo,
     FirTraceInfo,
@@ -97,4 +110,3 @@ table TraceNotification {
     direction: FBS.Common.TraceDirection;
     info: TraceInfo;
 }
-

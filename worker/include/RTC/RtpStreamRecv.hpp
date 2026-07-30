@@ -22,6 +22,14 @@ namespace RTC
 			  RTC::RtpStreamRecv* rtpStream, RTC::RTCP::Packet* packet) = 0;
 			virtual void OnRtpStreamNeedWorstRemoteFractionLost(
 			  RTC::RtpStreamRecv* rtpStream, uint8_t& worstRemoteFractionLost) = 0;
+			virtual void OnRtpStreamRtpActivityTransition(
+			  RTC::RtpStreamRecv* rtpStream,
+			  bool rtpActive,
+			  uint64_t transitionAtMs,
+			  uint64_t workerEventAtMs,
+			  uint64_t lastRtpActivityAtMs,
+			  uint32_t rtpActivityThresholdMs,
+			  uint64_t rtpActivityStateVersion) = 0;
 		};
 
 	public:

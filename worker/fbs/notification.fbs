@@ -45,6 +45,7 @@ enum Event: uint8 {
     ACTIVESPEAKEROBSERVER_DOMINANT_SPEAKER,
     AUDIOLEVELOBSERVER_SILENCE,
     AUDIOLEVELOBSERVER_VOLUMES,
+    PRODUCER_RTP_ACTIVITY_TRANSITION,
 }
 
 union Body {
@@ -73,6 +74,7 @@ union Body {
     DataConsumer_BufferedAmountLowNotification: FBS.DataConsumer.BufferedAmountLowNotification,
     ActiveSpeakerObserver_DominantSpeakerNotification: FBS.ActiveSpeakerObserver.DominantSpeakerNotification,
     AudioLevelObserver_VolumesNotification: FBS.AudioLevelObserver.VolumesNotification,
+    Producer_RtpActivityTransitionNotification: FBS.Producer.RtpActivityTransitionNotification,
 }
 
 table Notification {
@@ -80,4 +82,3 @@ table Notification {
     event: Event;
     body: Body;
 }
-

@@ -754,13 +754,24 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		this->lastRtpActivityAtMs = DepLibUV::GetTimeMs();
+		const uint64_t nowMs = DepLibUV::GetTimeMs();
+
+		this->lastRtpActivityAtMs = nowMs;
 
 		// Not inactive anymore.
 		if (this->inactive)
 		{
 			this->inactive = false;
 			++this->rtpActivityStateVersion;
+			static_cast<RTC::RtpStreamRecv::Listener*>(this->listener)
+			  ->OnRtpStreamRtpActivityTransition(
+			    this,
+			    /*rtpActive*/ true,
+			    /*transitionAtMs*/ nowMs,
+			    /*workerEventAtMs*/ nowMs,
+			    this->lastRtpActivityAtMs,
+			    static_cast<uint32_t>(this->rtpInactivityCheckInterval),
+			    this->rtpActivityStateVersion);
 
 			ResetScore(10, /*notify*/ true);
 		}
@@ -961,6 +972,15 @@ namespace RTC
 			{
 				this->inactive = true;
 				++this->rtpActivityStateVersion;
+				static_cast<RTC::RtpStreamRecv::Listener*>(this->listener)
+				  ->OnRtpStreamRtpActivityTransition(
+				    this,
+				    /*rtpActive*/ false,
+				    /*transitionAtMs*/ this->lastRtpActivityAtMs + this->rtpInactivityCheckInterval,
+				    /*workerEventAtMs*/ nowMs,
+				    this->lastRtpActivityAtMs,
+				    static_cast<uint32_t>(this->rtpInactivityCheckInterval),
+				    this->rtpActivityStateVersion);
 			}
 
 			if (GetScore() != 0)

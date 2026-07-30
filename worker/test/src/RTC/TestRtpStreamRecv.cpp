@@ -115,6 +115,17 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 		{
 		}
 
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool /*rtpActive*/,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t /*lastRtpActivityAtMs*/,
+		  uint32_t /*rtpActivityThresholdMs*/,
+		  uint64_t /*rtpActivityStateVersion*/) override
+		{
+		}
+
 	public:
 		bool shouldTriggerNack = false;
 		bool shouldTriggerPLI  = false;
@@ -234,6 +245,17 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
 		{
 		}
+
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool /*rtpActive*/,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t /*lastRtpActivityAtMs*/,
+		  uint32_t /*rtpActivityThresholdMs*/,
+		  uint64_t /*rtpActivityStateVersion*/) override
+		{
+		}
 	};
 
 	// clang-format off
@@ -319,8 +341,38 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		{
 		}
 
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool rtpActive,
+		  uint64_t transitionAtMs,
+		  uint64_t workerEventAtMs,
+		  uint64_t lastRtpActivityAtMs,
+		  uint32_t rtpActivityThresholdMs,
+		  uint64_t rtpActivityStateVersion) override
+		{
+			this->activityTransitions.push_back({
+			  rtpActive,
+			  transitionAtMs,
+			  workerEventAtMs,
+			  lastRtpActivityAtMs,
+			  rtpActivityThresholdMs,
+			  rtpActivityStateVersion
+			});
+		}
+
 	public:
+		struct ActivityTransition
+		{
+			bool rtpActive{ false };
+			uint64_t transitionAtMs{ 0u };
+			uint64_t workerEventAtMs{ 0u };
+			uint64_t lastRtpActivityAtMs{ 0u };
+			uint32_t rtpActivityThresholdMs{ 0u };
+			uint64_t rtpActivityStateVersion{ 0u };
+		};
+
 		std::vector<std::pair<uint8_t, uint8_t>> scores;
+		std::vector<ActivityTransition> activityTransitions;
 	};
 
 	// clang-format off
@@ -371,6 +423,14 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		REQUIRE(listener.scores.size() == 1u);
 		const std::pair<uint8_t, uint8_t> inactiveScore{ 10u, 0u };
 		REQUIRE(listener.scores.back() == inactiveScore);
+		REQUIRE(listener.activityTransitions.size() == 1u);
+		REQUIRE(listener.activityTransitions.back().rtpActive == false);
+		REQUIRE(listener.activityTransitions.back().rtpActivityStateVersion == 2u);
+		REQUIRE(listener.activityTransitions.back().rtpActivityThresholdMs == interval);
+		REQUIRE(
+		  listener.activityTransitions.back().transitionAtMs ==
+		  listener.activityTransitions.back().lastRtpActivityAtMs + interval);
+		REQUIRE(listener.activityTransitions.back().workerEventAtMs >= listener.activityTransitions.back().transitionAtMs);
 		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == false);
 
 		packet->SetSequenceNumber(1);
@@ -381,6 +441,16 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		REQUIRE(listener.scores.size() == 2u);
 		const std::pair<uint8_t, uint8_t> activeScore{ 0u, 10u };
 		REQUIRE(listener.scores.back() == activeScore);
+		REQUIRE(listener.activityTransitions.size() == 2u);
+		REQUIRE(listener.activityTransitions.back().rtpActive == true);
+		REQUIRE(listener.activityTransitions.back().rtpActivityStateVersion == 3u);
+		REQUIRE(listener.activityTransitions.back().rtpActivityThresholdMs == interval);
+		REQUIRE(
+		  listener.activityTransitions.back().transitionAtMs ==
+		  listener.activityTransitions.back().lastRtpActivityAtMs);
+		REQUIRE(
+		  listener.activityTransitions.back().workerEventAtMs ==
+		  listener.activityTransitions.back().transitionAtMs);
 		REQUIRE(rtpStream.testIsRtpInactivityTimerActive() == true);
 
 		const uint64_t firstActivityAtMs = rtpStream.testGetLastRtpActivityAtMs();
@@ -390,6 +460,7 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		REQUIRE(rtpStream.testGetLastRtpActivityAtMs() >= firstActivityAtMs);
 		REQUIRE(rtpStream.GetScore() == 10u);
 		REQUIRE(rtpStream.testGetRtpActivityStateVersion() == 3u);
+		REQUIRE(listener.activityTransitions.size() == 2u);
 	}
 
 	delete packet;

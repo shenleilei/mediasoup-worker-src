@@ -183,6 +183,14 @@ namespace RTC
 		bool MangleRtpPacket(RTC::RtpPacket* packet, RTC::RtpStreamRecv* rtpStream) const;
 		void PostProcessRtpPacket(RTC::RtpPacket* packet);
 		void EmitScore() const;
+		void EmitRtpActivityTransition(
+		  RTC::RtpStreamRecv* rtpStream,
+		  bool rtpActive,
+		  uint64_t transitionAtMs,
+		  uint64_t workerEventAtMs,
+		  uint64_t lastRtpActivityAtMs,
+		  uint32_t rtpActivityThresholdMs,
+		  uint64_t rtpActivityStateVersion) const;
 		void EmitTraceEventRtpAndKeyFrameTypes(RTC::RtpPacket* packet, bool isRtx = false) const;
 		void EmitTraceEventKeyFrameType(RTC::RtpPacket* packet, bool isRtx = false) const;
 		void EmitTraceEventPliType(uint32_t ssrc) const;
@@ -197,6 +205,14 @@ namespace RTC
 		void OnRtpStreamSendRtcpPacket(RTC::RtpStreamRecv* rtpStream, RTC::RTCP::Packet* packet) override;
 		void OnRtpStreamNeedWorstRemoteFractionLost(
 		  RTC::RtpStreamRecv* rtpStream, uint8_t& worstRemoteFractionLost) override;
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* rtpStream,
+		  bool rtpActive,
+		  uint64_t transitionAtMs,
+		  uint64_t workerEventAtMs,
+		  uint64_t lastRtpActivityAtMs,
+		  uint32_t rtpActivityThresholdMs,
+		  uint64_t rtpActivityStateVersion) override;
 
 		/* Pure virtual methods inherited from RTC::KeyFrameRequestManager::Listener. */
 	public:
