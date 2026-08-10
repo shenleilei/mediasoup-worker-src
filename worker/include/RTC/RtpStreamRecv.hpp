@@ -6,6 +6,7 @@
 #include "RTC/RateCalculator.hpp"
 #include "RTC/RtpStream.hpp"
 #include "handles/TimerHandle.hpp"
+#include <optional>
 #include <vector>
 
 namespace RTC
@@ -95,10 +96,17 @@ namespace RTC
 			return this->jitterUpdatedAtMs;
 		}
 
+		std::optional<int64_t> GetSenderToLocalClockOffsetMs() const
+		{
+			if (!this->hasSenderToLocalClockOffset) return std::nullopt;
+			return this->senderToLocalClockOffsetMs;
+		}
+
 	private:
 		void MarkRtpActivity();
 		void CalculateJitter(uint32_t rtpTimestamp);
 		void UpdateScore();
+		void UpdateSenderToLocalClockOffset();
 
 	#ifdef MS_TEST
 	public:
@@ -158,6 +166,10 @@ namespace RTC
 		uint32_t lastSrTimestamp{ 0u };
 		// Wallclock time representing the most recent sender report arrival.
 		uint64_t lastSrReceived{ 0u };
+		// Wallclock counterpart used for Absolute Capture Time clock correction.
+		uint64_t lastSrReceivedWallClockMs{ 0u };
+		int64_t senderToLocalClockOffsetMs{ 0 };
+		bool hasSenderToLocalClockOffset{ false };
 		// Relative transit time for prev packet.
 		int32_t transit{ 0u };
 		// Jitter in RTP timestamp units. As per spec it's kept as floating value

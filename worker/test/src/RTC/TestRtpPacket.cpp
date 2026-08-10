@@ -345,6 +345,36 @@ SCENARIO("parse RTP packets", "[parser][rtp]")
 		delete packet;
 	}
 
+	SECTION("updates Two-Bytes abs-capture-time clock offset in place")
+	{
+		uint8_t buffer[] = {
+			0x90, 0x01, 0x00, 0x08,
+			0x00, 0x00, 0x00, 0x04,
+			0x00, 0x00, 0x00, 0x05,
+			0x10, 0x00, 0x00, 0x05,
+			0x0d, 0x10,
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8,
+			0x00, 0x00,
+		};
+		RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+		REQUIRE(packet != nullptr);
+		packet->SetAbsCaptureTimeExtensionId(13);
+
+		uint64_t captureTimestamp{ 0u };
+		bool hasOffset{ false };
+		int64_t before{ 0 };
+		REQUIRE(packet->ReadAbsCaptureTime(captureTimestamp, hasOffset, before));
+		REQUIRE(hasOffset);
+		REQUIRE(packet->UpdateAbsCaptureTimeOffsetMs(500));
+
+		int64_t after{ 0 };
+		REQUIRE(packet->ReadAbsCaptureTime(captureTimestamp, hasOffset, after));
+		REQUIRE(hasOffset);
+		REQUIRE(Utils::Time::SignedNtp64ToMs(after) - Utils::Time::SignedNtp64ToMs(before) == 500);
+		delete packet;
+	}
+
 	SECTION("create RtpPacket with Two-Bytes header extension")
 	{
 		// clang-format off

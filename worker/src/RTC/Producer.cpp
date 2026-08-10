@@ -521,7 +521,7 @@ namespace RTC
 
 				if (len > RTC::MtuSize + 100)
 				{
-					MS_WARN_TAG(rtp, "given RTP packet exceeds maximum size [len:%i]", len);
+					MS_WARN_TAG(info, "given RTP packet exceeds maximum size [len:%i]", len);
 
 					break;
 				}
@@ -541,7 +541,7 @@ namespace RTC
 
 				if (!packet)
 				{
-					MS_WARN_TAG(rtp, "received data is not a valid RTP packet");
+					MS_WARN_TAG(info, "received data is not a valid RTP packet");
 
 					break;
 				}
@@ -577,7 +577,7 @@ namespace RTC
 
 		if (!rtpStream)
 		{
-			MS_WARN_TAG(rtp, "no stream found for received packet [ssrc:%" PRIu32 "]", packet->GetSsrc());
+			MS_WARN_TAG(info, "no stream found for received packet [ssrc:%" PRIu32 "]", packet->GetSsrc());
 
 #ifdef MS_RTC_LOGGER_RTP
 			packet->logger.Dropped(RtcLogger::RtpPacket::DropReason::RECV_RTP_STREAM_NOT_FOUND);
@@ -1026,7 +1026,7 @@ namespace RTC
 				}
 			}
 
-			MS_WARN_TAG(rtp, "ignoring packet with unknown RID (RID lookup)");
+			MS_WARN_TAG(info, "ignoring packet with unknown RID (RID lookup)");
 
 			return nullptr;
 		}
@@ -1248,7 +1248,7 @@ namespace RTC
 
 			if (it == this->rtpMapping.codecs.end())
 			{
-				MS_WARN_TAG(rtp, "unknown payload type [payloadType:%" PRIu8 "]", payloadType);
+				MS_WARN_TAG(info, "unknown payload type [payloadType:%" PRIu8 "]", payloadType);
 
 				return false;
 			}
@@ -1297,14 +1297,37 @@ namespace RTC
 
 			if (extenValue)
 			{
-				std::memcpy(bufferPtr, extenValue, extenLen);
+				// The 16-byte form carries a capture-clock offset in addition to the
+				// absolute capture timestamp. When we have an RTCP-derived clock
+				// sample, rewrite the offset to the SFU clock domain. When we don't
+				// yet have a sample, fall back to the 8-byte form so receivers can
+				// still compute a basic end-to-end latency from the capture NTP time.
+				if (extenLen == 16u)
+				{
+					const auto senderToLocalOffsetMs = rtpStream->GetSenderToLocalClockOffsetMs();
 
-				extensions.emplace_back(
-				  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::ABS_CAPTURE_TIME),
-				  extenLen,
-				  bufferPtr);
+					if (senderToLocalOffsetMs.has_value() &&
+						packet->UpdateAbsCaptureTimeOffsetMs(*senderToLocalOffsetMs))
+					{
+						extenLen = 16u;
+					}
+					else
+					{
+						extenLen = 8u;
+					}
+				}
 
-				bufferPtr += extenLen;
+				if (extenLen >= 8u)
+				{
+					std::memcpy(bufferPtr, extenValue, extenLen);
+
+					extensions.emplace_back(
+					  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::ABS_CAPTURE_TIME),
+					extenLen,
+					  bufferPtr);
+
+					bufferPtr += extenLen;
+				}
 			}
 
 			if (this->kind == RTC::Media::Kind::AUDIO)
@@ -1425,7 +1448,7 @@ namespace RTC
 			{
 				packet->SetPayloadType(originalPayloadType);
 				packet->SetSsrc(originalSsrc);
-				MS_WARN_TAG(rtp, "RTP packet has insufficient capacity for header extensions");
+				MS_WARN_TAG(info, "RTP packet has insufficient capacity for header extensions");
 				return false;
 			}
 

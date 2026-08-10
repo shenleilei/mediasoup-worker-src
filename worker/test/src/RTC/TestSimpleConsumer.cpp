@@ -121,6 +121,7 @@ namespace
 		uint8_t transportWideCcId{ 0u };
 		bool useNack{ false };
 		const char* scalabilityMode{ nullptr };
+		uint8_t absCaptureTimeId{ 0u };
 	};
 
 	struct ExtensionProfile
@@ -128,6 +129,7 @@ namespace
 		uint8_t midId{ 0u };
 		uint8_t absSendTimeId{ 0u };
 		uint8_t transportWideCcId{ 0u };
+		uint8_t absCaptureTimeId{ 0u };
 	};
 
 	struct PacketSnapshot
@@ -145,6 +147,8 @@ namespace
 		bool hasOneByteExtensions{ false };
 		bool hasTwoBytesExtensions{ false };
 		std::vector<uint8_t> extensionIds;
+		bool hasAbsCaptureTime{ false };
+		std::vector<uint8_t> absCaptureTime;
 		std::vector<uint8_t> payload;
 		std::vector<uint8_t> bytes;
 	};
@@ -203,6 +207,16 @@ namespace
 			{
 				snapshot.hasTransportWideCc = true;
 				snapshot.transportWideCc    = Utils::Byte::Get2Bytes(value, 0u);
+			}
+		}
+		if (profile.absCaptureTimeId != 0u)
+		{
+			uint8_t length{ 0u };
+			auto* value = packet->GetExtension(profile.absCaptureTimeId, length);
+			if (value && (length == 8u || length == 16u))
+			{
+				snapshot.hasAbsCaptureTime = true;
+				snapshot.absCaptureTime.assign(value, value + length);
 			}
 		}
 
@@ -305,7 +319,16 @@ namespace
 			  FBS::RtpParameters::CreateRtpHeaderExtensionParametersDirect(
 			    builder,
 			    FBS::RtpParameters::RtpHeaderExtensionUri::TransportWideCcDraft01,
-			    config.transportWideCcId));
+				config.transportWideCcId));
+		}
+
+		if (config.absCaptureTimeId != 0u)
+		{
+			headerExtensions.emplace_back(
+			  FBS::RtpParameters::CreateRtpHeaderExtensionParametersDirect(
+				builder,
+				FBS::RtpParameters::RtpHeaderExtensionUri::AbsCaptureTime,
+				config.absCaptureTimeId));
 		}
 
 		auto codec = FBS::RtpParameters::CreateRtpCodecParametersDirect(
@@ -1145,6 +1168,85 @@ TEST_CASE(
 	CHECK(listenerB.retransmittedPackets[0].absSendTime == listenerB.sentPackets[0].absSendTime);
 	CHECK(listenerB.retransmittedPackets[0].transportWideCc == listenerB.sentPackets[0].transportWideCc);
 	RequireCanonicalPacket(canonicalPacket);
+}
+
+TEST_CASE(
+  "SimpleConsumer forwards absolute capture time using the negotiated ingress extension id",
+  "[consumer][rtp][extensions][abs-capture-time]")
+{
+	constexpr const char* ProducerId{ "producer-abs-capture-forward" };
+	ConsumerConfig config{
+	  "consumer-abs-capture-forward",
+	  ProducerId,
+	  "video",
+	  ConsumerSsrc,
+	  1u,
+	  4u,
+	  5u,
+	  false,
+	  nullptr,
+	  7u
+	};
+
+	RTC::Shared shared(new ChannelMessageRegistrator(), nullptr);
+	TestConsumerListener listener(
+	  H264Fixture,
+	  { config.midId, config.absSendTimeId, config.transportWideCcId, config.absCaptureTimeId });
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildConsumeRequest(builder, H264Fixture, config);
+	RTC::SimpleConsumer consumer(
+	  &shared, config.consumerId, ProducerId, &listener, request);
+
+	TestRtpStreamRecvListener rtpStreamRecvListener;
+	RTC::RtpStream::Params producerParams;
+	producerParams.ssrc        = ProducerSsrc;
+	producerParams.payloadType = PayloadType;
+	producerParams.clockRate   = 90000u;
+	producerParams.mimeType.SetMimeType(H264Fixture.mimeType);
+	RTC::RtpStreamRecv producerStream(
+	  &rtpStreamRecvListener,
+	  producerParams,
+	  /*sendNackDelayMs*/ 0u,
+	  /*useRtpInactivityCheck*/ false);
+	SetupActiveSyncConsumer(consumer, producerStream);
+
+	CanonicalPacket canonicalPacket;
+	std::array<uint8_t, RTC::MidMaxLength> mid{ 's', 'o', 'u', 'r', 'c', 'e', '0', '0' };
+	std::array<uint8_t, 3u> absSendTime{ 0x12u, 0x34u, 0x56u };
+	std::array<uint8_t, 2u> transportWideCc{ 0x78u, 0x9au };
+	std::array<uint8_t, 16u> absCaptureTime{
+	  0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u, 0x08u,
+	  0xffu, 0xfeu, 0xfdu, 0xfcu, 0xfbu, 0xfau, 0xf9u, 0xf8u
+	};
+	std::vector<RTC::RtpPacket::GenericExtension> extensions{
+		{ static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::MID),
+		  static_cast<uint8_t>(mid.size()),
+		  mid.data() },
+		{ static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::ABS_SEND_TIME),
+		  static_cast<uint8_t>(absSendTime.size()),
+		  absSendTime.data() },
+		{ static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::TRANSPORT_WIDE_CC_01),
+		  static_cast<uint8_t>(transportWideCc.size()),
+		  transportWideCc.data() },
+		{ 9u, static_cast<uint8_t>(absCaptureTime.size()), absCaptureTime.data() }
+	};
+	REQUIRE(canonicalPacket.packet->SetExtensions(1u, extensions));
+	canonicalPacket.packet->SetMidExtensionId(
+	  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::MID));
+	canonicalPacket.packet->SetAbsSendTimeExtensionId(
+	  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::ABS_SEND_TIME));
+	canonicalPacket.packet->SetTransportWideCc01ExtensionId(
+	  static_cast<uint8_t>(RTC::RtpHeaderExtensionUri::Type::TRANSPORT_WIDE_CC_01));
+	canonicalPacket.packet->SetAbsCaptureTimeExtensionId(9u);
+
+	RTC::Consumer::RtpPacketFanoutContext fanoutContext;
+	consumer.SendRtpPacket(canonicalPacket.packet.get(), fanoutContext);
+
+	REQUIRE(listener.sentPackets.size() == 1u);
+	CHECK(listener.sentPackets[0].extensionIds == std::vector<uint8_t>{ 1u, 4u, 5u, 7u });
+	REQUIRE(listener.sentPackets[0].hasAbsCaptureTime);
+	CHECK(listener.sentPackets[0].absCaptureTime ==
+	      std::vector<uint8_t>(absCaptureTime.begin(), absCaptureTime.end()));
 }
 
 TEST_CASE(

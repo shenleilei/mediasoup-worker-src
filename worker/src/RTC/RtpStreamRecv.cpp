@@ -5,6 +5,8 @@
 #include "Logger.hpp"
 #include "Utils.hpp"
 #include "RTC/Codecs/Tools.hpp"
+#include <cmath>
+#include <cstdlib>
 #include <new>
 
 namespace RTC
@@ -642,17 +644,45 @@ namespace RTC
 		this->lastSrTimestamp = report->GetNtpSec() << 16;
 		this->lastSrTimestamp += report->GetNtpFrac() >> 16;
 
-		// Update info about last Sender Report.
-		Utils::Time::Ntp ntp{}; // NOLINT(cppcoreguidelines-pro-type-member-init)
+		// Update info about last Sender Report. Convert the NTP timestamp to
+		// Unix-epoch milliseconds before comparing it with the local wall clock.
+		const uint64_t senderReportNtp64 =
+		  (static_cast<uint64_t>(report->GetNtpSec()) << 32u) | report->GetNtpFrac();
 
-		ntp.seconds   = report->GetNtpSec();
-		ntp.fractions = report->GetNtpFrac();
-
-		this->lastSenderReportNtpMs = Utils::Time::Ntp2TimeMs(ntp);
+		this->lastSenderReportNtpMs = Utils::Time::Ntp64ToUnixMs(senderReportNtp64);
 		this->lastSenderReportTs    = report->GetRtpTs();
+		this->lastSrReceivedWallClockMs = Utils::Time::GetRealTimeMs();
+		UpdateSenderToLocalClockOffset();
 
 		// Update the score with the current RR.
 		UpdateScore();
+	}
+
+	void RtpStreamRecv::UpdateSenderToLocalClockOffset()
+	{
+		if (this->lastSenderReportNtpMs == 0u || this->lastSrReceivedWallClockMs == 0u) {
+			return;
+		}
+
+		const int64_t senderNtpMs = static_cast<int64_t>(this->lastSenderReportNtpMs);
+		const int64_t localArrivalMs = static_cast<int64_t>(this->lastSrReceivedWallClockMs);
+		const int64_t halfRttMs = this->rtt > 0.0f
+			? static_cast<int64_t>(std::llround(static_cast<double>(this->rtt) / 2.0))
+			: 0;
+		const int64_t rawOffsetMs = senderNtpMs - localArrivalMs + halfRttMs;
+		if (std::llabs(rawOffsetMs) > 24LL * 60LL * 60LL * 1000LL) {
+			return;
+		}
+
+		if (!this->hasSenderToLocalClockOffset) {
+			this->senderToLocalClockOffsetMs = rawOffsetMs;
+			this->hasSenderToLocalClockOffset = true;
+			return;
+		}
+
+		this->senderToLocalClockOffsetMs = static_cast<int64_t>(std::llround(
+			static_cast<double>(this->senderToLocalClockOffsetMs) * 0.8 +
+			static_cast<double>(rawOffsetMs) * 0.2));
 	}
 
 	void RtpStreamRecv::ReceiveRtxRtcpSenderReport(RTC::RTCP::SenderReport* report)
@@ -707,6 +737,8 @@ namespace RTC
 		{
 			this->rttUpdatedAtMs = nowMs;
 		}
+
+		UpdateSenderToLocalClockOffset();
 
 		// Tell it to the NackGenerator.
 		if (this->params.useNack)

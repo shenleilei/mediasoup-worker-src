@@ -12,6 +12,8 @@
 #include <absl/container/flat_hash_map.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -306,6 +308,11 @@ namespace RTC
 			this->absCaptureTimeExtensionId = id;
 		}
 
+		uint8_t GetAbsCaptureTimeExtensionId() const
+		{
+			return this->absCaptureTimeExtensionId;
+		}
+
 		uint8_t GetTransportWideCc01ExtensionId() const
 		{
 			return this->transportWideCc01ExtensionId;
@@ -416,6 +423,32 @@ namespace RTC
 				estimatedCaptureClockOffset = static_cast<int64_t>(Utils::Byte::Get8Bytes(extenValue, 8));
 			}
 
+			return true;
+		}
+
+		// Add a sender-to-local clock offset to the estimated capture clock
+		// offset carried by the 16-byte Absolute Capture Time extension.
+		bool UpdateAbsCaptureTimeOffsetMs(int64_t offsetMs) const
+		{
+			uint8_t extenLen;
+			uint8_t* extenValue = GetExtension(this->absCaptureTimeExtensionId, extenLen);
+			if (!extenValue || extenLen != 16u) return false;
+
+			const long double scaled =
+			  (static_cast<long double>(offsetMs) * static_cast<long double>(uint64_t{ 1 } << 32)) / 1000.0L;
+			if (!std::isfinite(scaled) ||
+			    scaled < static_cast<long double>(std::numeric_limits<int64_t>::min()) ||
+			    scaled > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+				return false;
+			}
+
+			const int64_t delta = static_cast<int64_t>(std::llround(scaled));
+		const int64_t current = static_cast<int64_t>(Utils::Byte::Get8Bytes(extenValue, 8));
+		if ((delta > 0 && current > std::numeric_limits<int64_t>::max() - delta) ||
+		    (delta < 0 && current < std::numeric_limits<int64_t>::min() - delta)) {
+				return false;
+			}
+			Utils::Byte::Set8Bytes(extenValue, 8, static_cast<uint64_t>(current + delta));
 			return true;
 		}
 

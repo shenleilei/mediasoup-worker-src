@@ -229,6 +229,7 @@ namespace RTC
 			if (
 			  packet->GetMidExtensionId() != extensionIds.mid ||
 			  packet->GetAbsSendTimeExtensionId() != extensionIds.absSendTime ||
+			  packet->GetAbsCaptureTimeExtensionId() != extensionIds.absCaptureTime ||
 			  packet->GetTransportWideCc01ExtensionId() != extensionIds.transportWideCc01)
 			{
 				return false;
@@ -726,6 +727,25 @@ namespace RTC
 			extensionBufferPtr += extensionLength;
 		}
 
+		// Absolute Capture Time.
+		if (this->rtpHeaderExtensionIds.absCaptureTime != 0u)
+		{
+			uint8_t extensionLength{ 0u };
+			auto* sourceValue = packet->GetExtension(
+			  packet->GetAbsCaptureTimeExtensionId(),
+			  extensionLength);
+
+			if (sourceValue && (extensionLength == 8u || extensionLength == 16u))
+			{
+				std::memcpy(extensionBufferPtr, sourceValue, extensionLength);
+				extensions.emplace_back(
+				  this->rtpHeaderExtensionIds.absCaptureTime,
+				  extensionLength,
+				  extensionBufferPtr);
+				extensionBufferPtr += extensionLength;
+			}
+		}
+
 		// abs-send-time.
 		if (this->rtpHeaderExtensionIds.absSendTime != 0u)
 		{
@@ -778,6 +798,8 @@ namespace RTC
 				}
 
 				rewrittenPacket->SetMidExtensionId(this->rtpHeaderExtensionIds.mid);
+				rewrittenPacket->SetAbsCaptureTimeExtensionId(
+				  this->rtpHeaderExtensionIds.absCaptureTime);
 				rewrittenPacket->SetAbsSendTimeExtensionId(this->rtpHeaderExtensionIds.absSendTime);
 				rewrittenPacket->SetTransportWideCc01ExtensionId(
 				  this->rtpHeaderExtensionIds.transportWideCc01);

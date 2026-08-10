@@ -120,6 +120,11 @@ namespace RTC
 			{
 				this->rtpHeaderExtensionIds.rrid = exten.id;
 			}
+
+			if (this->rtpHeaderExtensionIds.absCaptureTime == 0u && exten.type == RTC::RtpHeaderExtensionUri::Type::ABS_CAPTURE_TIME)
+			{
+				this->rtpHeaderExtensionIds.absCaptureTime = exten.id;
+			}
 		}
 
 		// paused is set to false by default.

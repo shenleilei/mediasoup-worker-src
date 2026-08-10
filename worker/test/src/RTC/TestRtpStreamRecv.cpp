@@ -1,9 +1,11 @@
 #include "common.hpp"
 #include "DepLibUV.hpp"
 #include "FBS/rtpStream.h"
+#include "RTC/RTCP/SenderReport.hpp"
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpStream.hpp"
 #include "RTC/RtpStreamRecv.hpp"
+#include "Utils.hpp"
 #include <flatbuffers/flatbuffers.h>
 #include <catch2/catch_test_macros.hpp>
 #include <utility>
@@ -354,6 +356,22 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(recvStats->lastRtpActivityAtMs() > 0u);
 	REQUIRE(recvStats->rtpActivityThresholdMs() == 0u);
 	REQUIRE(recvStats->rtpActivityStateVersion() == 1u);
+
+	const auto localWallClockMs = Utils::Time::GetRealTimeMs();
+	const auto senderNtp64 = Utils::Time::UnixMsToNtp64(localWallClockMs + 1000u);
+	RTCP::SenderReport senderReport;
+	senderReport.SetSsrc(params.ssrc);
+	senderReport.SetNtpSec(static_cast<uint32_t>(senderNtp64 >> 32));
+	senderReport.SetNtpFrac(static_cast<uint32_t>(senderNtp64 & 0xFFFFFFFFULL));
+	senderReport.SetRtpTs(1234u);
+	rtpStream.ReceiveRtcpSenderReport(&senderReport);
+
+	const auto senderToLocalOffsetMs = rtpStream.GetSenderToLocalClockOffsetMs();
+	REQUIRE(senderToLocalOffsetMs.has_value());
+	// A sender clock one second ahead of the local wall clock must produce a
+	// positive sender-to-local offset, after converting both clocks to Unix ms.
+	REQUIRE(senderToLocalOffsetMs.value() >= 500);
+	REQUIRE(senderToLocalOffsetMs.value() <= 1500);
 
 	delete packet;
 }
