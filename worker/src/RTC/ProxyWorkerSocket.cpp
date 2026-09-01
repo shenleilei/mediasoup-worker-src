@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
@@ -22,7 +23,7 @@ namespace RTC
 	{
 		constexpr size_t ReceiveBatchSize{ 16u };
 		constexpr size_t MaxSendDatagramsPerPoll{ 128u };
-		constexpr auto MaxIoWorkPerPoll = std::chrono::milliseconds(1);
+		constexpr auto MaxSendIoWorkPerPoll = std::chrono::milliseconds(1);
 
 		bool IsTransientSendError(int error)
 		{
@@ -117,6 +118,23 @@ namespace RTC
 		}
 		this->receiveBatchStorage = std::make_unique<ReceiveBatchStorage>();
 		this->sendExpiryTimer     = std::make_unique<TimerHandle>(this);
+
+		if (const char* raw = std::getenv("MEDIASOUP_WORKER_PROXY_UDS_MAX_RECV_PER_POLL"))
+		{
+			const auto value = std::strtoull(raw, nullptr, 10);
+			if (value >= 1u && value <= 65536u)
+			{
+				this->maxReceiveDatagramsPerPoll = static_cast<size_t>(value);
+			}
+		}
+		if (const char* raw = std::getenv("MEDIASOUP_WORKER_PROXY_UDS_MAX_RECV_MS"))
+		{
+			const auto value = std::strtoull(raw, nullptr, 10);
+			if (value >= 1u && value <= 1000u)
+			{
+				this->maxReceiveWorkPerPollMs = value;
+			}
+		}
 
 		size_t localAddressLen{ 0u };
 		if (!RTC::ProxyWorkerIpc::SockaddrLength(localAddress, localAddressLen))
@@ -333,7 +351,8 @@ namespace RTC
 			{
 				return;
 			}
-			if (std::chrono::steady_clock::now() - startedAt >= MaxIoWorkPerPoll)
+			if (std::chrono::steady_clock::now() - startedAt >=
+			    std::chrono::milliseconds(this->maxReceiveWorkPerPollMs))
 			{
 				++this->receiveBudgetYields;
 				return;
@@ -617,7 +636,7 @@ namespace RTC
 			this->CompletePendingSend(pending, sent);
 			this->pendingSends.pop_front();
 			++processed;
-			if (std::chrono::steady_clock::now() - startedAt >= MaxIoWorkPerPoll)
+			if (std::chrono::steady_clock::now() - startedAt >= MaxSendIoWorkPerPoll)
 			{
 				break;
 			}

@@ -39,7 +39,8 @@ namespace RTC
 		static constexpr size_t MaxPendingSendDatagrams{ 4096u };
 		static constexpr size_t MaxPendingSendBytes{ 8u * 1024u * 1024u };
 		static constexpr uint64_t MaxPendingSendAgeMs{ 250u };
-		static constexpr size_t MaxReceiveDatagramsPerPoll{ 128u };
+		static constexpr size_t MaxReceiveDatagramsPerPoll{ 1024u };
+		static constexpr uint64_t MaxReceiveWorkPerPollMs{ 4u };
 
 		ProxyWorkerSocket(Listener* listener, std::string path, const struct sockaddr* localAddress);
 		~ProxyWorkerSocket();
@@ -231,6 +232,7 @@ namespace RTC
 		size_t maxPendingSendBytes{ MaxPendingSendBytes };
 		uint64_t maxPendingSendAgeMs{ MaxPendingSendAgeMs };
 		size_t maxReceiveDatagramsPerPoll{ MaxReceiveDatagramsPerPoll };
+		uint64_t maxReceiveWorkPerPollMs{ MaxReceiveWorkPerPollMs };
 		size_t recvBytes{ 0u };
 		size_t sentBytes{ 0u };
 		uint64_t transientSendRetries{ 0u };
