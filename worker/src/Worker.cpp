@@ -454,7 +454,24 @@ void Worker::HandleRequest(Channel::ChannelRequest* request)
 
 				if (handler == nullptr)
 				{
-					MS_THROW_ERROR("Channel request handler with ID %s not found", request->handlerId.c_str());
+					// Benign lifecycle race (same family as the idempotent
+					// closeConsumer fix): since the P1 sync-teardown change the
+					// server cascade-closes consumers/producers when a producer
+					// ends, and trailing client requests for the dropped handler
+					// (consumer.setPreferredLayers, requestKeyFrame, pause, ...)
+					// arrive afterwards. Reply an error to the caller as before,
+					// but log at debug level instead of throwing/logging at error
+					// severity: at fleet scale this buried the
+					// mediasoup-error-log-spike backstop alert (~200k rows/day,
+					// verified benign: no consume_fail growth, no crashes).
+					MS_DEBUG_DEV(
+					  "channel request handler not found, replying error to stale request [handlerId:%s method:%s]",
+					  request->handlerId.c_str(),
+					  request->methodCStr);
+
+					request->Error("Channel request handler not found");
+
+					break;
 				}
 
 				handler->HandleRequest(request);
