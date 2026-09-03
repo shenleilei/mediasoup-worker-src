@@ -1322,8 +1322,26 @@ namespace RTC
 			{
 				const auto* body = request->data->body_as<FBS::Transport::CloseConsumerRequest>();
 
-				// This may throw.
-				RTC::Consumer* consumer = GetConsumerById(body->consumerId()->str());
+				auto consumerIt = this->mapConsumers.find(body->consumerId()->str());
+
+				if (consumerIt == this->mapConsumers.end())
+				{
+					// Idempotent close: the Consumer may have already been removed by the
+					// server-side cascade teardown (producer/transport close). A trailing
+					// client-side transport.closeConsumer for it is a benign lifecycle race;
+					// accept it as a no-op instead of throwing, so it does not emit
+					// error-level logs (MS_THROW_ERROR logs at error severity).
+					MS_DEBUG_DEV(
+					  "TRANSPORT_CLOSE_CONSUMER consumer already closed; accepting as no-op [transportId:%s consumerId:%s]",
+					  this->id.c_str(),
+					  body->consumerId()->str().c_str());
+
+					request->Accept();
+
+					break;
+				}
+
+				RTC::Consumer* consumer = consumerIt->second;
 				MS_DEBUG_DEV(
 				  "TRANSPORT_CLOSE_CONSUMER start [transportId:%s consumerId:%s]",
 				  this->id.c_str(),
