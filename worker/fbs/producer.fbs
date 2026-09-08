@@ -44,6 +44,7 @@ table Score {
     ssrc: uint32;
     rid: string;
     score: uint8;
+    instant_score: uint8 = 10;
 }
 
 table ScoreNotification {

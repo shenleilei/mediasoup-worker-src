@@ -2,6 +2,7 @@
 #include "DepLibUV.hpp"
 #include "FBS/rtpStream.h"
 #include "RTC/RTCP/SenderReport.hpp"
+#include "RTC/RTCP/XrDelaySinceLastRr.hpp"
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpStream.hpp"
 #include "RTC/RtpStreamRecv.hpp"
@@ -17,6 +18,238 @@ using namespace RTC;
 static constexpr size_t MaxRequestedPackets{ 17 };
 static constexpr unsigned int SendNackDelay{ 0u }; // In ms.
 static const bool UseRtpInactivityCheck{ false };
+
+TEST_CASE("instant producer score mapping", "[rtp][rtpstream][score]")
+{
+	SECTION("loss mapping")
+	{
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 0) == 10u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 4) == 8u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 8) == 5u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 9) == 5u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 10) == 4u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 12) == 3u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 16) == 2u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 20) == 1u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 24) == 0u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(100, 40) == 0u);
+		REQUIRE(RtpStreamRecv::ComputeInstantLossScore(0, 0) == 10u);
+	}
+
+	SECTION("rtt mapping")
+	{
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(0.0f) == 10u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(100.0f) == 10u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(200.0f) == 8u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(300.0f) == 6u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(400.0f) == 4u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(500.0f) == 3u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(800.0f) == 2u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(1000.0f) == 1u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(1500.0f) == 0u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(2000.0f) == 0u);
+		REQUIRE(RtpStreamRecv::ComputeInstantRttScore(5000.0f) == 0u);
+	}
+
+	SECTION("combined mapping takes the worst signal")
+	{
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 0, 50.0f) == 10u);
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 0, 500.0f) == 3u);
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 8, 100.0f) == 5u);
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 0, 400.0f) == 4u);
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 20, 100.0f) == 1u);
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 20, 500.0f) == 1u);
+		REQUIRE(RtpStreamRecv::ComputeInstantScore(100, 40, 500.0f) == 0u);
+	}
+}
+
+SCENARIO("XR RTT updates instant score without waiting for SR", "[rtp][rtpstream][score]")
+{
+	class RtpStreamRecvListener : public RtpStreamRecv::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+			++this->scoreEventCount;
+		}
+
+		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamNeedWorstRemoteFractionLost(
+		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
+		{
+		}
+
+		void OnRtpStreamRtpActivityTransition(
+		  RTC::RtpStreamRecv* /*rtpStream*/,
+		  bool /*rtpActive*/,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t /*lastRtpActivityAtMs*/,
+		  uint32_t /*rtpActivityThresholdMs*/,
+		  uint64_t /*rtpActivityStateVersion*/) override
+		{
+		}
+
+	public:
+		size_t scoreEventCount{ 0u };
+	};
+
+	RtpStream::Params params;
+
+	params.ssrc = 1234u;
+	params.clockRate = 90000;
+	params.mimeType.type = RTC::RtpCodecMimeType::Type::VIDEO;
+	params.mimeType.subtype = RTC::RtpCodecMimeType::Subtype::VP8;
+	params.mimeType.UpdateMimeType();
+
+	RtpStreamRecvListener listener;
+	RtpStreamRecv rtpStream(&listener, params, SendNackDelay, UseRtpInactivityCheck);
+
+	REQUIRE(rtpStream.GetScore() == 10u);
+	REQUIRE(rtpStream.GetInstantScore() == 10u);
+
+	const auto ntp = Utils::Time::TimeMs2Ntp(DepLibUV::GetTimeMs());
+	uint32_t compactNtp = (ntp.seconds & 0x0000FFFF) << 16;
+	compactNtp |= (ntp.fractions & 0xFFFF0000) >> 16;
+
+	// 32768 compact NTP units are 500ms. Reserve one unit for DLRR so the
+	// resulting RTT is exactly 32768 units.
+	auto* ssrcInfo = new RTCP::DelaySinceLastRr::SsrcInfo();
+	ssrcInfo->SetSsrc(params.ssrc);
+	ssrcInfo->SetLastReceiverReport(compactNtp - 32769u);
+	ssrcInfo->SetDelaySinceLastReceiverReport(1u);
+
+	rtpStream.testReceiveRtcpXrDelaySinceLastRr(ssrcInfo);
+
+	REQUIRE(rtpStream.GetInstantScore() == 3u);
+	REQUIRE(listener.scoreEventCount == 1u);
+	REQUIRE(rtpStream.GetInstantLossRatio() == 0.0f);
+	REQUIRE(rtpStream.GetInstantRttMs() == 500.0f);
+
+	flatbuffers::FlatBufferBuilder statsBuilder;
+	auto statsOffset = rtpStream.FillBufferStats(statsBuilder);
+	statsBuilder.Finish(statsOffset);
+
+	const auto* stats = flatbuffers::GetRoot<FBS::RtpStream::Stats>(statsBuilder.GetBufferPointer());
+	REQUIRE(stats);
+	const auto* recvStats = stats->data_as_RecvStats();
+	REQUIRE(recvStats);
+	REQUIRE(recvStats->base());
+	const auto* baseStats = recvStats->base()->data_as_BaseStats();
+	REQUIRE(baseStats);
+	REQUIRE(baseStats->instantScore() == 3u);
+	REQUIRE(baseStats->instantLossRatio() == 0.0f);
+	REQUIRE(baseStats->instantRttMs() == 500.0f);
+
+	delete ssrcInfo;
+}
+
+SCENARIO("loss-only instant score drop notifies without legacy score change", "[rtp][rtpstream][score]")
+{
+	class CountingListener : public RtpStreamRecv::Listener
+	{
+	public:
+		size_t scoreEventCount{ 0u };
+
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+			this->scoreEventCount++;
+		}
+
+		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamNeedWorstRemoteFractionLost(
+		  RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
+		{
+		}
+
+		void OnRtpStreamRtpActivityTransition(
+		  RtpStreamRecv* /*rtpStream*/,
+		  bool /*rtpActive*/,
+		  uint64_t /*transitionAtMs*/,
+		  uint64_t /*workerEventAtMs*/,
+		  uint64_t /*lastRtpActivityAtMs*/,
+		  uint32_t /*rtpActivityThresholdMs*/,
+		  uint64_t /*rtpActivityStateVersion*/) override
+		{
+		}
+	};
+
+	// clang-format off
+	uint8_t buffer[] =
+	{
+		0x80, 0x01, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x04,
+		0x00, 0x00, 0x00, 0x05
+	};
+	// clang-format on
+
+	RtpPacket* packet = RtpPacket::Parse(buffer, sizeof(buffer));
+
+	REQUIRE(packet);
+
+	RtpStream::Params params;
+
+	params.ssrc      = packet->GetSsrc();
+	params.clockRate = 90000;
+	params.mimeType.type = RTC::RtpCodecMimeType::Type::VIDEO;
+	params.mimeType.subtype = RTC::RtpCodecMimeType::Subtype::VP8;
+	params.mimeType.UpdateMimeType();
+
+	CountingListener listener;
+	RtpStreamRecv rtpStream(&listener, params, SendNackDelay, UseRtpInactivityCheck);
+
+	// Activate the stream and fill the 24-entry score histogram with perfect
+	// windows so the smoothed legacy score is pinned at 10.
+	packet->SetSequenceNumber(1);
+	REQUIRE(rtpStream.ReceivePacket(packet) == true);
+
+	RTCP::SenderReport senderReport;
+	senderReport.SetSsrc(params.ssrc);
+
+	for (uint8_t i = 0; i < 30; ++i)
+	{
+		rtpStream.ReceiveRtcpSenderReport(&senderReport);
+	}
+
+	REQUIRE(rtpStream.GetScore() == 10u);
+	REQUIRE(rtpStream.GetInstantScore() == 10u);
+
+	const auto eventsBefore = listener.scoreEventCount;
+
+	// Next window: expected 29, received 25, lost 4 (loss ratio ~13.8%).
+	// The legacy sample is round(((25-4)/25)^4 * 10) = 5, and the weighted
+	// average of [10 x 23, 5] stays at 10, so the legacy score does not move.
+	// The instant loss score for 13.8% is 3, so instantScore must drop to 3
+	// and MUST emit a score event even though the legacy score is unchanged.
+	uint16_t seq = 2;
+
+	for (uint16_t slot = 0; slot < 29; ++slot)
+	{
+		if (slot == 5 || slot == 12 || slot == 19 || slot == 26)
+		{
+			seq++;
+
+			continue;
+		}
+
+		packet->SetSequenceNumber(seq++);
+		REQUIRE(rtpStream.ReceivePacket(packet) == true);
+	}
+
+	rtpStream.ReceiveRtcpSenderReport(&senderReport);
+
+	REQUIRE(rtpStream.GetScore() == 10u);
+	REQUIRE(rtpStream.GetInstantScore() == 3u);
+	REQUIRE(listener.scoreEventCount > eventsBefore);
+	REQUIRE(rtpStream.GetInstantLossRatio() > 0.13f);
+	REQUIRE(rtpStream.GetInstantLossRatio() < 0.14f);
+}
 
 SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 {
@@ -341,6 +574,7 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 	REQUIRE(static_cast<uint64_t>(baseStats->estimatedCaptureClockOffset().value()) == 0xfffefdfcfbfaf9f8ULL);
 	REQUIRE(baseStats->rttUpdatedAtMs() == 0u);
 	REQUIRE(baseStats->scoreUpdatedAtMs() > 0u);
+	REQUIRE(baseStats->instantScore() == 10u);
 	REQUIRE(baseStats->rtcpLossWindowStartMs() == rtpStream.GetRtcpLossWindowStartMs());
 	REQUIRE(baseStats->rtcpLossWindowEndMs() == rtpStream.GetRtcpLossWindowEndMs());
 	REQUIRE(baseStats->rtcpExpectedPackets() == 2u);

@@ -58,6 +58,9 @@ table BaseStats {
     pli_count: uint64;
     fir_count: uint64;
     score: uint8;
+    instant_score: uint8 = 10;
+    instant_loss_ratio: float;
+    instant_rtt_ms: float;
     rid: string;
     rtx_ssrc: uint32 = null;
     rtx_packets_discarded: uint64;

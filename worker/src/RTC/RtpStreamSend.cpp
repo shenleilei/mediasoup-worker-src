@@ -675,6 +675,7 @@ namespace RTC
 		// We didn't send any packet.
 		if (sent == 0)
 		{
+			SetInstantScore(10u);
 			RTC::RtpStream::UpdateScore(10);
 
 			return;
@@ -734,6 +735,9 @@ namespace RTC
 		  score);
 #endif
 
+		// Send-side streams do not have producer XR RTT; expose the current raw
+		// report score as their instant score.
+		SetInstantScore(score);
 		// Call the parent method for update score.
 		RTC::RtpStream::UpdateScore(score);
 	}

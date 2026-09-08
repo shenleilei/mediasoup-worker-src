@@ -1537,7 +1537,8 @@ namespace RTC
 			  rtpStream->GetEncodingIdx(),
 			  rtpStream->GetSsrc(),
 			  !rtpStream->GetRid().empty() ? rtpStream->GetRid().c_str() : nullptr,
-			  rtpStream->GetScore()));
+			  rtpStream->GetScore(),
+			  rtpStream->GetInstantScore()));
 		}
 
 		auto notification = FBS::Producer::CreateScoreNotificationDirect(

@@ -229,6 +229,22 @@ namespace RTC
 		{
 			return this->score;
 		}
+		uint8_t GetInstantScore() const
+		{
+			return this->instantScore;
+		}
+		uint64_t GetInstantScoreUpdatedAtMs() const
+		{
+			return this->instantScoreUpdatedAtMs;
+		}
+		float GetInstantLossRatio() const
+		{
+			return this->instantLossRatio;
+		}
+		float GetInstantRttMs() const
+		{
+			return this->instantRttMs;
+		}
 		uint64_t GetActiveMs() const
 		{
 			return DepLibUV::GetTimeMs() - this->activeSinceMs;
@@ -237,6 +253,13 @@ namespace RTC
 	protected:
 		bool UpdateSeq(RTC::RtpPacket* packet, bool notifyGap = true);
 		void UpdateScore(uint8_t score);
+		void SetInstantScore(uint8_t instantScore);
+		void SetInstantMetrics(float lossRatio, float rttMs);
+		void UpdateInstantScore(uint8_t instantScore);
+		void EnableInstantScoreNotifications()
+		{
+			this->notifyInstantScoreChanges = true;
+		}
 		void PacketNewlyMissing(size_t packetCount);
 		void PacketRetransmitted(RTC::RtpPacket* packet);
 		void PacketRepaired(RTC::RtpPacket* packet);
@@ -322,7 +345,12 @@ namespace RTC
 	private:
 		// Score related.
 		uint8_t score{ 0u };
+		uint8_t instantScore{ 0u };
+		float instantLossRatio{ 0.0f };
+		float instantRttMs{ 0.0f };
+		bool notifyInstantScoreChanges{ false };
 		uint64_t scoreUpdatedAtMs{ 0u };
+		uint64_t instantScoreUpdatedAtMs{ 0u };
 		std::vector<uint8_t> scores;
 		// Whether at least a RTP packet has been received.
 		bool started{ false };

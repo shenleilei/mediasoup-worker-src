@@ -18,8 +18,9 @@ namespace RTC
 
 	RtpStream::RtpStream(
 	  RTC::RtpStream::Listener* listener, RTC::RtpStream::Params& params, uint8_t initialScore)
-	  : listener(listener), params(params), score(initialScore), scoreUpdatedAtMs(DepLibUV::GetTimeMs()),
-	    activeSinceMs(this->scoreUpdatedAtMs)
+	  : listener(listener), params(params), score(initialScore), instantScore(initialScore),
+	    scoreUpdatedAtMs(DepLibUV::GetTimeMs()),
+	    instantScoreUpdatedAtMs(this->scoreUpdatedAtMs), activeSinceMs(this->scoreUpdatedAtMs)
 	{
 		MS_TRACE();
 	}
@@ -77,6 +78,9 @@ namespace RTC
 		  this->pliCount,
 		  this->firCount,
 		  this->score,
+		  this->instantScore,
+		  this->instantLossRatio,
+		  this->instantRttMs,
 		  !this->params.rid.empty() ? this->params.rid.c_str() : nullptr,
 		  this->params.rtxSsrc ? flatbuffers::Optional<uint32_t>(this->params.rtxSsrc)
 		                       : flatbuffers::nullopt,
@@ -187,25 +191,32 @@ namespace RTC
 
 		this->scores.clear();
 
-		if (this->score != score)
+		if (this->score == score && this->instantScore == score)
 		{
-			const auto nowMs = DepLibUV::GetTimeMs();
-			auto previousScore = this->score;
+			return;
+		}
 
-			this->score = score;
-			this->scoreUpdatedAtMs = nowMs;
+		const auto nowMs = DepLibUV::GetTimeMs();
+		const auto previousScore = this->score;
+		const auto previousInstantScore = this->instantScore;
 
-			// If previous score was 0 (and new one is not 0) then update activeSinceMs.
-			if (previousScore == 0u)
-			{
-				this->activeSinceMs = nowMs;
-			}
+		this->score = score;
+		this->scoreUpdatedAtMs = nowMs;
+		this->instantScore = score;
+		this->instantScoreUpdatedAtMs = nowMs;
 
-			// Notify the listener.
-			if (notify)
-			{
-				this->listener->OnRtpStreamScore(this, score, previousScore);
-			}
+		// If previous score was 0 (and new one is not 0) then update activeSinceMs.
+		if (previousScore == 0u)
+		{
+			this->activeSinceMs = nowMs;
+		}
+
+		// Notify the listener.
+		if (notify &&
+		    (this->score != previousScore ||
+		     (this->notifyInstantScoreChanges && this->instantScore != previousInstantScore)))
+		{
+			this->listener->OnRtpStreamScore(this, this->score, previousScore);
 		}
 	}
 
@@ -306,8 +317,9 @@ namespace RTC
 			this->scores.erase(this->scores.begin());
 		}
 
-		auto previousScore = this->score;
-		const auto nowMs   = DepLibUV::GetTimeMs();
+		const auto previousScore = this->score;
+		const auto previousInstantScore = this->instantScore;
+		const auto nowMs = DepLibUV::GetTimeMs();
 
 		// Compute new effective score taking into accout entries in the histogram.
 		this->scores.push_back(score);
@@ -341,8 +353,9 @@ namespace RTC
 		this->score = static_cast<uint8_t>(std::round(static_cast<double>(totalScore) / samples));
 		this->scoreUpdatedAtMs = nowMs;
 
-		// Call the listener if the global score has changed.
-		if (this->score != previousScore)
+		// Call the listener if either the global score or the instant score changed.
+		if (this->score != previousScore ||
+		    (this->notifyInstantScoreChanges && this->instantScore != previousInstantScore))
 		{
 			MS_DEBUG_TAG(
 			  score,
@@ -371,6 +384,36 @@ namespace RTC
 			  previousScore,
 			  this->score);
 #endif
+		}
+	}
+
+	void RtpStream::SetInstantScore(uint8_t instantScore)
+	{
+		MS_TRACE();
+
+		this->instantScore = instantScore;
+		this->instantScoreUpdatedAtMs = DepLibUV::GetTimeMs();
+	}
+
+	void RtpStream::SetInstantMetrics(float lossRatio, float rttMs)
+	{
+		MS_TRACE();
+
+		this->instantLossRatio = lossRatio;
+		this->instantRttMs = rttMs;
+	}
+
+	void RtpStream::UpdateInstantScore(uint8_t instantScore)
+	{
+		MS_TRACE();
+
+		const auto previousInstantScore = this->instantScore;
+
+		SetInstantScore(instantScore);
+
+		if (this->notifyInstantScoreChanges && this->instantScore != previousInstantScore)
+		{
+			this->listener->OnRtpStreamScore(this, this->score, this->score);
 		}
 	}
 

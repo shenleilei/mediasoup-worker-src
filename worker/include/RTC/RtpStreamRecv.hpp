@@ -52,6 +52,10 @@ namespace RTC
 		};
 
 	public:
+		static uint8_t ComputeInstantLossScore(uint32_t expected, uint32_t lost);
+		static uint8_t ComputeInstantRttScore(float rttMs);
+		static uint8_t ComputeInstantScore(uint32_t expected, uint32_t lost, float rttMs);
+
 		RtpStreamRecv(
 		  RTC::RtpStreamRecv::Listener* listener,
 		  RTC::RtpStream::Params& params,
@@ -106,10 +110,15 @@ namespace RTC
 		void MarkRtpActivity();
 		void CalculateJitter(uint32_t rtpTimestamp);
 		void UpdateScore();
+		void UpdateInstantScoreFromRtt();
 		void UpdateSenderToLocalClockOffset();
 
 	#ifdef MS_TEST
 	public:
+		void testReceiveRtcpXrDelaySinceLastRr(RTCP::DelaySinceLastRr::SsrcInfo* ssrcInfo)
+		{
+			ReceiveRtcpXrDelaySinceLastRr(ssrcInfo);
+		}
 		uint64_t testGetRtpInactivityCheckInterval() const
 		{
 			return this->rtpInactivityCheckInterval;
@@ -178,6 +187,12 @@ namespace RTC
 		uint64_t jitterUpdatedAtMs{ 0u };
 		uint8_t firSeqNumber{ 0u };
 		uint32_t reportedPacketLost{ 0u };
+		// Latest instantaneous loss score and window loss ratio, retained so an
+		// XR RTT update can recompute instantScore without advancing the SR loss
+		// interval. Named distinctly from the base-class instantLossRatio metric
+		// to avoid member shadowing.
+		uint8_t instantLossScore{ 10u };
+		float windowLossRatio{ 0.0f };
 		std::unique_ptr<RTC::NackGenerator> nackGenerator;
 		TimerHandle* inactivityCheckPeriodicTimer{ nullptr };
 		uint64_t rtpInactivityCheckInterval{ 0u };

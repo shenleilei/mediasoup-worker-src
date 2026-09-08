@@ -5,7 +5,9 @@
 #include "Logger.hpp"
 #include "Utils.hpp"
 #include "RTC/Codecs/Tools.hpp"
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <new>
 
@@ -214,6 +216,8 @@ namespace RTC
 	      params.spatialLayers, params.temporalLayers, this->params.useDtx ? 6000 : 2500)
 	{
 		MS_TRACE();
+
+		EnableInstantScoreNotifications();
 
 		if (this->params.useNack)
 		{
@@ -740,6 +744,11 @@ namespace RTC
 
 		UpdateSenderToLocalClockOffset();
 
+		if (!this->inactive)
+		{
+			UpdateInstantScoreFromRtt();
+		}
+
 		// Tell it to the NackGenerator.
 		if (this->params.useNack)
 		{
@@ -838,6 +847,9 @@ namespace RTC
 			    static_cast<uint32_t>(this->rtpInactivityCheckInterval),
 			    this->rtpActivityStateVersion);
 
+			this->instantLossScore = 10u;
+			this->windowLossRatio = 0.0f;
+			SetInstantMetrics(0.0f, this->rtt);
 			ResetScore(10, /*notify*/ true);
 		}
 
@@ -878,6 +890,89 @@ namespace RTC
 
 		this->jitter += (1. / 16.) * (static_cast<float>(d) - this->jitter);
 		this->jitterUpdatedAtMs = nowMs;
+	}
+
+	namespace
+	{
+		struct ScoreAnchor
+		{
+			double x;
+			double score;
+		};
+
+		// Piecewise linear interpolation over monotonically decreasing anchors.
+		inline double InterpolateScore(const ScoreAnchor* anchors, size_t count, double x)
+		{
+			if (x <= anchors[0].x)
+			{
+				return anchors[0].score;
+			}
+
+			for (size_t i = 1; i < count; ++i)
+			{
+				if (x <= anchors[i].x)
+				{
+					const auto& previous = anchors[i - 1];
+					const auto& next     = anchors[i];
+					const double t       = (x - previous.x) / (next.x - previous.x);
+
+					return previous.score + t * (next.score - previous.score);
+				}
+			}
+
+			return anchors[count - 1].score;
+		}
+
+		// Alert-oriented loss curve: 8% -> 5, 10% -> 4, 12% -> 3, 16% -> 2,
+		// 20% -> 1, >= 24% -> 0.
+		constexpr ScoreAnchor kInstantLossAnchors[] = {
+		  {0.00, 10.0}, {0.08, 5.0}, {0.10, 4.0}, {0.12, 3.0}, {0.16, 2.0}, {0.20, 1.0}, {0.24, 0.0}};
+
+		// Alert-oriented RTT curve: <= 100ms -> 10, 400ms -> 4, 500ms -> 3,
+		// 800ms -> 2, 1000ms -> 1, >= 1500ms -> 0.
+		constexpr ScoreAnchor kInstantRttAnchors[] = {
+		  {0.0, 10.0}, {100.0, 10.0}, {400.0, 4.0}, {500.0, 3.0}, {800.0, 2.0}, {1000.0, 1.0}, {1500.0, 0.0}};
+	} // namespace
+
+	uint8_t RtpStreamRecv::ComputeInstantLossScore(uint32_t expected, uint32_t lost)
+	{
+		MS_TRACE();
+
+		if (expected == 0u)
+		{
+			return 10u;
+		}
+
+		const double lossRatio =
+		  std::min(1.0, static_cast<double>(lost) / static_cast<double>(expected));
+		const double score = InterpolateScore(kInstantLossAnchors, std::size(kInstantLossAnchors), lossRatio);
+
+		return static_cast<uint8_t>(
+		  std::clamp(static_cast<double>(std::lround(score)), 0.0, 10.0));
+	}
+
+	uint8_t RtpStreamRecv::ComputeInstantRttScore(float rttMs)
+	{
+		MS_TRACE();
+
+		// RTT is unknown before the first XR DLRR response.
+		if (rttMs <= 0.0f)
+		{
+			return 10u;
+		}
+
+		const double score =
+		  InterpolateScore(kInstantRttAnchors, std::size(kInstantRttAnchors), static_cast<double>(rttMs));
+
+		return static_cast<uint8_t>(
+		  std::clamp(static_cast<double>(std::lround(score)), 0.0, 10.0));
+	}
+
+	uint8_t RtpStreamRecv::ComputeInstantScore(uint32_t expected, uint32_t lost, float rttMs)
+	{
+		MS_TRACE();
+
+		return std::min(ComputeInstantLossScore(expected, lost), ComputeInstantRttScore(rttMs));
 	}
 
 	void RtpStreamRecv::UpdateScore()
@@ -924,6 +1019,18 @@ namespace RTC
 		{
 			return;
 		}
+
+		this->instantLossScore = ComputeInstantLossScore(expected, lost);
+		this->windowLossRatio = expected == 0u
+		  ? 0.0f
+		  : static_cast<float>(std::min(1.0, static_cast<double>(lost) / static_cast<double>(expected)));
+		SetInstantMetrics(this->windowLossRatio, this->rtt);
+		// UpdateInstantScore (not SetInstantScore): a loss-only degradation must
+		// fire the score event immediately even when the smoothed legacy score
+		// does not move. The parent UpdateScore() called below compares against
+		// the already-updated instant score, so no duplicate notification occurs
+		// for the instant term.
+		UpdateInstantScore(std::min(this->instantLossScore, ComputeInstantRttScore(this->rtt)));
 
 		// We didn't expect more packets to come.
 		if (expected == 0)
@@ -1011,6 +1118,14 @@ namespace RTC
 		RTC::RtpStream::UpdateScore(score);
 	}
 
+	void RtpStreamRecv::UpdateInstantScoreFromRtt()
+	{
+		MS_TRACE();
+
+		SetInstantMetrics(this->windowLossRatio, this->rtt);
+		UpdateInstantScore(std::min(this->instantLossScore, ComputeInstantRttScore(this->rtt)));
+	}
+
 	void RtpStreamRecv::UserOnSequenceNumberReset()
 	{
 		MS_TRACE();
@@ -1022,6 +1137,9 @@ namespace RTC
 		this->reportedPacketLost = 0u;
 		this->packetsLost        = 0u;
 		this->fractionLost       = 0u;
+		this->instantLossScore   = 10u;
+		this->windowLossRatio   = 0.0f;
+		SetInstantMetrics(0.0f, this->rtt);
 
 		this->rtcpLossWindowStartMs = 0u;
 		this->rtcpLossWindowEndMs   = 0u;
@@ -1076,6 +1194,9 @@ namespace RTC
 				  rtp, score, "RTP inactivity detected, resetting score to 0 [ssrc:%" PRIu32 "]", GetSsrc());
 			}
 
+			this->instantLossScore = 10u;
+			this->windowLossRatio = 0.0f;
+			SetInstantMetrics(0.0f, this->rtt);
 			ResetScore(0, /*notify*/ true);
 		}
 	}
