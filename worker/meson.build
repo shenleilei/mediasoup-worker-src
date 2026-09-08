@@ -366,6 +366,7 @@ test_sources = [
   'test/src/RTC/TestSrtpSession.cpp',
   'test/src/RTC/TestSendTimeHistory.cpp',
   'test/src/RTC/TestTransportCongestionControlServer.cpp',
+  'test/src/RTC/TestTransportCongestionControlClient.cpp',
   'test/src/RTC/TestWebRtcServer.cpp',
   'test/src/RTC/Codecs/TestVP8.cpp',
   'test/src/RTC/Codecs/TestVP9.cpp',

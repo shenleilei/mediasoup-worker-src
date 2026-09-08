@@ -89,6 +89,22 @@ namespace RTC
 		double GetPacketLoss() const;
 		void RescheduleNextAvailableBitrateEvent();
 
+#ifdef MS_TEST
+	public:
+		void testInitializeController()
+		{
+			InitializeController();
+		}
+		const Bitrates& testGetBitrates() const
+		{
+			return this->bitrates;
+		}
+		uint32_t testGetInitialAvailableBitrate() const
+		{
+			return this->initialAvailableBitrate;
+		}
+#endif
+
 	private:
 		void MayEmitAvailableBitrateEvent(uint32_t previousAvailableBitrate);
 		void UpdatePacketLoss(double packetLoss);
