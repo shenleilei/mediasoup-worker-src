@@ -17,7 +17,12 @@
 
 namespace RTC
 {
-	constexpr uint32_t TransportCongestionControlMinOutgoingBitrate{ 30000u };
+	// Global floor for the GCC send-side estimate (raised from 30kbps on
+	// 2026-09-08 for the downlink quality experiment: the estimator target
+	// never drops below this, and it also raises the ALR padding target on
+	// EVERY transport, including vehicle-side ones). Doubles as the minimum
+	// accepted value for SetMax/SetMinOutgoingBitrate requests.
+	constexpr uint32_t TransportCongestionControlMinOutgoingBitrate{ 2400000u };
 
 	class TransportCongestionControlClient : public webrtc::PacketRouter,
 	                                         public webrtc::TargetTransferRateObserver,
