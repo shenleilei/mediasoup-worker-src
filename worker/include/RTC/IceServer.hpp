@@ -52,6 +52,8 @@ namespace RTC
 			virtual void OnIceServerConnected(const RTC::IceServer* iceServer)    = 0;
 			virtual void OnIceServerCompleted(const RTC::IceServer* iceServer)    = 0;
 			virtual void OnIceServerDisconnected(const RTC::IceServer* iceServer) = 0;
+			virtual void OnIceServerConsentChange(
+			  const RTC::IceServer* iceServer, bool active, uint64_t idleMs) = 0;
 		};
 
 	public:
@@ -93,9 +95,15 @@ namespace RTC
 			return this->tuples.size();
 		}
 		void StartConsentTimeoutForTesting(RTC::TransportTuple* tuple, uint64_t timeoutMs);
+		void StartConsentIdleForTesting(RTC::TransportTuple* tuple, uint64_t initialMs, uint64_t repeatMs);
+		void ReceiveConsentRequestForTesting();
 		bool IsConsentCheckRunningForTesting() const
 		{
 			return IsConsentCheckRunning();
+		}
+		bool IsConsentIdleForTesting() const
+		{
+			return this->consentIdle;
 		}
 #endif
 		/**
@@ -134,6 +142,10 @@ namespace RTC
 		void StartConsentCheck();
 		void RestartConsentCheck();
 		void StopConsentCheck();
+		void HandleConsentRequestReceived();
+		void StartConsentIdleCheck();
+		void RestartConsentIdleCheck();
+		void StopConsentIdleCheck();
 
 		/* Pure virtual methods inherited from TimerHandle::Listener. */
 	public:
@@ -153,7 +165,9 @@ namespace RTC
 		std::list<RTC::TransportTuple> tuples;
 		RTC::TransportTuple* selectedTuple{ nullptr };
 		TimerHandle* consentCheckTimer{ nullptr };
+		TimerHandle* consentIdleTimer{ nullptr };
 		uint64_t lastConsentRequestReceivedAtMs{ 0u };
+		bool consentIdle{ false };
 		bool isRemovingTuples{ false };
 	};
 } // namespace RTC

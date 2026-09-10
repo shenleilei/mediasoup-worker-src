@@ -131,6 +131,11 @@ table IceStateChangeNotification {
     ice_state: IceState;
 }
 
+table IceConsentChangeNotification {
+    active: bool;
+    idle_ms: uint64;
+}
+
 table DtlsStateChangeNotification {
     dtls_state: DtlsState;
     remote_cert: string;

@@ -77,6 +77,14 @@ namespace
 			}
 		}
 
+		void OnIceServerConsentChange(
+		  const RTC::IceServer* /*iceServer*/, bool active, uint64_t idleMs) override
+		{
+			++this->consentChangeCount;
+			this->lastConsentActive = active;
+			this->lastConsentIdleMs = idleMs;
+		}
+
 	public:
 		bool throwOnUsernameRemoved{ false };
 		bool throwOnTupleRemoved{ false };
@@ -84,6 +92,9 @@ namespace
 		size_t usernameRemovedCount{ 0u };
 		size_t tupleRemovedCount{ 0u };
 		size_t disconnectedCount{ 0u };
+		size_t consentChangeCount{ 0u };
+		bool lastConsentActive{ false };
+		uint64_t lastConsentIdleMs{ 0u };
 	};
 
 	template<typename Predicate>
@@ -242,6 +253,40 @@ TEST_CASE("ICE selected tuple removal stops consent timer before listener failur
 		CHECK(iceServer.GetSelectedTuple() == nullptr);
 		CHECK(iceServer.GetState() == RTC::IceServer::IceState::DISCONNECTED);
 		CHECK_FALSE(iceServer.IsConsentCheckRunningForTesting());
+	}
+
+	REQUIRE(RunLoopUntil(
+	  [baselineHandleCount]() { return CountLoopHandles() == baselineHandleCount; }));
+}
+
+TEST_CASE("ICE consent idle emits and recovers", "[ice]")
+{
+	const auto baselineHandleCount = CountLoopHandles();
+	TestIceServerListener listener;
+	{
+		RTC::IceServer iceServer(&listener, "username", "password", 10u);
+		struct sockaddr_in remoteAddress
+		{
+		};
+		REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &remoteAddress.sin_addr) == 1);
+		remoteAddress.sin_family = AF_INET;
+		remoteAddress.sin_port   = htons(42002u);
+		RTC::TransportTuple tuple(
+		  static_cast<RTC::UdpSocket*>(nullptr),
+		  reinterpret_cast<const struct sockaddr*>(&remoteAddress));
+
+		iceServer.StartConsentIdleForTesting(&tuple, 20u, 10u);
+		REQUIRE(RunLoopUntil([&listener]() { return listener.consentChangeCount >= 2u; }));
+		CHECK_FALSE(listener.lastConsentActive);
+		CHECK(listener.lastConsentIdleMs >= 20u);
+		CHECK(iceServer.IsConsentIdleForTesting());
+
+		const auto idleEventsBeforeRefresh = listener.consentChangeCount;
+		iceServer.ReceiveConsentRequestForTesting();
+		CHECK(listener.consentChangeCount == idleEventsBeforeRefresh + 1u);
+		CHECK(listener.lastConsentActive);
+		CHECK(listener.lastConsentIdleMs == 0u);
+		CHECK_FALSE(iceServer.IsConsentIdleForTesting());
 	}
 
 	REQUIRE(RunLoopUntil(

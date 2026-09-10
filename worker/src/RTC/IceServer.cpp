@@ -67,6 +67,8 @@ namespace RTC
 	static constexpr size_t MaxTuples{ 8 };
 	static constexpr uint8_t ConsentCheckMinTimeoutSec{ 10u };
 	static constexpr uint8_t ConsentCheckMaxTimeoutSec{ 60u };
+	static constexpr uint64_t ConsentIdleInitialMs{ 6000u };
+	static constexpr uint64_t ConsentIdleRepeatMs{ 1000u };
 
 	/* Class methods. */
 	IceServer::IceState IceStateFromFbs(FBS::WebRtcTransport::IceState state)
@@ -213,9 +215,11 @@ namespace RTC
 		// Unset selected tuple.
 		this->selectedTuple = nullptr;
 
-		// Delete the ICE consent check timer.
+		// Delete the ICE consent timers.
 		delete this->consentCheckTimer;
 		this->consentCheckTimer = nullptr;
+		delete this->consentIdleTimer;
+		this->consentIdleTimer = nullptr;
 	}
 
 #ifdef MS_TEST
@@ -235,6 +239,27 @@ namespace RTC
 		}
 
 		this->consentCheckTimer->Start(timeoutMs);
+	}
+
+	void IceServer::StartConsentIdleForTesting(
+	  RTC::TransportTuple* tuple, uint64_t initialMs, uint64_t repeatMs)
+	{
+		auto* storedTuple                    = AddTuple(tuple);
+		this->selectedTuple                  = storedTuple;
+		this->state                          = IceState::CONNECTED;
+		this->lastConsentRequestReceivedAtMs = DepLibUV::GetTimeMs();
+
+		if (!this->consentIdleTimer)
+		{
+			this->consentIdleTimer = new TimerHandle(this);
+		}
+
+		this->consentIdleTimer->Start(initialMs, repeatMs);
+	}
+
+	void IceServer::ReceiveConsentRequestForTesting()
+	{
+		HandleConsentRequestReceived();
 	}
 #endif
 
@@ -300,9 +325,28 @@ namespace RTC
 
 		// Restart ICE consent check (if running) to give some time to the
 		// client to establish ICE again.
-		if (IsConsentCheckSupported() && IsConsentCheckRunning())
+		if (IsConsentCheckSupported())
 		{
-			RestartConsentCheck();
+			if (IsConsentCheckRunning())
+			{
+				RestartConsentCheck();
+			}
+			this->consentIdle = false;
+			if (this->consentIdleTimer)
+			{
+				if (this->consentIdleTimer->IsActive())
+				{
+					RestartConsentIdleCheck();
+				}
+				else
+				{
+					StartConsentIdleCheck();
+				}
+			}
+			else
+			{
+				StartConsentIdleCheck();
+			}
 		}
 	}
 
@@ -429,9 +473,17 @@ namespace RTC
 				// Stop terminal timer activity before notifying user code. If the
 				// notification allocates and fails, no later timer callback can observe
 				// DISCONNECTED with a null selected tuple and abort on its invariants.
-				if (IsConsentCheckSupported() && IsConsentCheckRunning())
+				if (IsConsentCheckSupported())
 				{
-					StopConsentCheck();
+					if (IsConsentCheckRunning())
+					{
+						StopConsentCheck();
+					}
+					this->consentIdle = false;
+					if (this->consentIdleTimer && this->consentIdleTimer->IsActive())
+					{
+						StopConsentIdleCheck();
+					}
 				}
 
 				InvokeIceListenerNoThrow(
@@ -622,14 +674,7 @@ namespace RTC
 		// start or restart ICE consent check (if supported).
 		if (IsConsentCheckSupported() && (this->state == IceState::CONNECTED || this->state == IceState::COMPLETED))
 		{
-			if (IsConsentCheckRunning())
-			{
-				RestartConsentCheck();
-			}
-			else
-			{
-				StartConsentCheck();
-			}
+			HandleConsentRequestReceived();
 		}
 	}
 
@@ -1050,6 +1095,73 @@ namespace RTC
 		this->consentCheckTimer->Stop();
 	}
 
+	void IceServer::HandleConsentRequestReceived()
+	{
+		MS_TRACE();
+
+		this->lastConsentRequestReceivedAtMs = DepLibUV::GetTimeMs();
+
+		if (this->consentIdle)
+		{
+			this->consentIdle = false;
+			InvokeIceListenerNoThrow(
+			  "ICE consent active listener",
+			  [this]() { this->listener->OnIceServerConsentChange(this, true, 0u); });
+		}
+
+		if (IsConsentCheckRunning())
+		{
+			RestartConsentCheck();
+		}
+		else
+		{
+			StartConsentCheck();
+		}
+
+		if (this->consentIdleTimer && this->consentIdleTimer->IsActive())
+		{
+			RestartConsentIdleCheck();
+		}
+		else
+		{
+			StartConsentIdleCheck();
+		}
+	}
+
+	void IceServer::StartConsentIdleCheck()
+	{
+		MS_TRACE();
+
+		MS_ASSERT(IsConsentCheckSupported(), "ICE consent check not supported");
+
+		if (!this->consentIdleTimer)
+		{
+			this->consentIdleTimer = new TimerHandle(this);
+		}
+
+		this->consentIdleTimer->Start(ConsentIdleInitialMs, ConsentIdleRepeatMs);
+	}
+
+	void IceServer::RestartConsentIdleCheck()
+	{
+		MS_TRACE();
+
+		MS_ASSERT(IsConsentCheckSupported(), "ICE consent check not supported");
+		MS_ASSERT(this->consentIdleTimer, "ICE consent idle timer not created");
+
+		this->consentIdleTimer->Restart();
+	}
+
+	void IceServer::StopConsentIdleCheck()
+	{
+		MS_TRACE();
+
+		MS_ASSERT(IsConsentCheckSupported(), "ICE consent check not supported");
+		MS_ASSERT(this->consentIdleTimer, "ICE consent idle timer not created");
+
+		this->consentIdleTimer->Stop();
+	}
+
 	inline void IceServer::OnTimer(TimerHandle* timer) noexcept
 	{
 		try
@@ -1058,6 +1170,24 @@ namespace RTC
 		}
 		catch (...)
 		{
+		}
+
+		if (timer == this->consentIdleTimer)
+		{
+			MS_ASSERT(IsConsentCheckSupported(), "ICE consent check not supported");
+
+			// The normal ICE state remains connected until the longer consent timer
+			// expires. Emit a low-volume idle signal so the parent runtime can combine
+			// it with its application-level viewer liveness signal.
+			if (this->state == IceState::CONNECTED || this->state == IceState::COMPLETED)
+			{
+				this->consentIdle     = true;
+				const uint64_t idleMs = DepLibUV::GetTimeMs() - this->lastConsentRequestReceivedAtMs;
+				InvokeIceListenerNoThrow(
+				  "ICE consent idle listener",
+				  [this, idleMs]() { this->listener->OnIceServerConsentChange(this, false, idleMs); });
+			}
+			return;
 		}
 
 		if (timer == this->consentCheckTimer)
@@ -1084,6 +1214,12 @@ namespace RTC
 			{
 				InvokeIceListenerNoThrow(
 				  "ICE consent timer stop", [this]() { this->consentCheckTimer->Stop(); });
+			}
+			this->consentIdle = false;
+			if (this->consentIdleTimer && this->consentIdleTimer->IsActive())
+			{
+				InvokeIceListenerNoThrow(
+				  "ICE consent idle timer stop", [this]() { this->consentIdleTimer->Stop(); });
 			}
 
 			// Update state.

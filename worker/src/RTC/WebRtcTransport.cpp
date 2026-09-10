@@ -7,6 +7,7 @@
 #include "Settings.hpp"
 #include "Utils.hpp"
 #include "FBS/webRtcTransport.h"
+#include <cinttypes>
 #include <cmath> // std::pow()
 
 namespace RTC
@@ -1272,6 +1273,24 @@ namespace RTC
 		{
 			RTC::Transport::Disconnected();
 		}
+	}
+
+	inline void WebRtcTransport::OnIceServerConsentChange(
+	  const RTC::IceServer* /*iceServer*/, bool active, uint64_t idleMs)
+	{
+		MS_TRACE();
+
+		MS_DEBUG_TAG(ice, "ICE consent active=%u idleMs=%" PRIu64, active ? 1u : 0u, idleMs);
+
+		// Notify the Node WebRtcTransport.
+		auto consentChangeOffset = FBS::WebRtcTransport::CreateIceConsentChangeNotification(
+		  this->shared->channelNotifier->GetBufferBuilder(), active, idleMs);
+
+		this->shared->channelNotifier->Emit(
+		  this->id,
+		  FBS::Notification::Event::WEBRTCTRANSPORT_ICE_CONSENT_CHANGE,
+		  FBS::Notification::Body::WebRtcTransport_IceConsentChangeNotification,
+		  consentChangeOffset);
 	}
 
 	inline void WebRtcTransport::OnDtlsTransportConnecting(const RTC::DtlsTransport* /*dtlsTransport*/)
