@@ -249,6 +249,8 @@ SCENARIO("loss-only instant score drop notifies without legacy score change", "[
 	REQUIRE(listener.scoreEventCount > eventsBefore);
 	REQUIRE(rtpStream.GetInstantLossRatio() > 0.13f);
 	REQUIRE(rtpStream.GetInstantLossRatio() < 0.14f);
+
+	delete packet;
 }
 
 SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
