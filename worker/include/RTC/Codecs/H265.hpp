@@ -37,6 +37,17 @@ namespace RTC
 				bool hasFrameMarking{ false };
 				bool isFragmentStart{ false };
 				bool isFragmentEnd{ false };
+				// first_slice_segment_in_pic_flag read from the slice segment
+				// header.  Authoritative picture-start signal per H.265
+				// 7.3.6.1: exactly one slice segment of a picture has it set,
+				// regardless of the number of slices.
+				bool isFirstSliceOfPicture{ false };
+				// True when the slice segment header was present and readable
+				// in this packet (single NAL, FU start fragment, or an
+				// aggregation sub-NAL).  A false flag read from a readable
+				// header is credible evidence that this packet is NOT the
+				// picture start; a missing header is unknown, not false.
+				bool isFirstSliceCredible{ false };
 			};
 
 		public:
@@ -91,10 +102,21 @@ namespace RTC
 				}
 				bool IsFrameStart() const override
 				{
-					// FU S/E bits describe a NAL fragment, not an access-unit boundary.
-					// Without frame marking, a later slice's FU start cannot prove that
-					// the whole frame start was received.
-					return this->payloadDescriptor->hasFrameMarking && this->payloadDescriptor->s != 0;
+					// Frame marking is authoritative when negotiated; do not mix it
+					// with slice-header evidence on the same stream.
+					if (this->payloadDescriptor->hasFrameMarking)
+					{
+						return this->payloadDescriptor->s != 0;
+					}
+					// first_slice_segment_in_pic_flag is an authoritative
+					// picture-start signal: a later slice of the same picture can
+					// never set it.  A missing/unreadable slice header is unknown.
+					return this->payloadDescriptor->isFirstSliceCredible &&
+					       this->payloadDescriptor->isFirstSliceOfPicture;
+				}
+				bool IsFrameStartFromSliceHeader() const override
+				{
+					return !this->payloadDescriptor->hasFrameMarking;
 				}
 				bool IsFrameEnd(bool rtpMarker) const override
 				{
@@ -102,9 +124,11 @@ namespace RTC
 					{
 						return this->payloadDescriptor->e != 0;
 					}
-					// FU boundaries are NAL boundaries.  Corroborate the final
-					// fragment with the RTP marker before claiming a frame end.
-					return this->payloadDescriptor->isFragmentEnd && rtpMarker;
+					// The RTP marker bit marks the last packet of an access unit
+					// for H.265 video (RFC 7798 4.4).  It covers FU, single NAL
+					// and aggregation packets alike; FU fragment-end alone only
+					// marks a NAL boundary.
+					return rtpMarker;
 				}
 
 			private:

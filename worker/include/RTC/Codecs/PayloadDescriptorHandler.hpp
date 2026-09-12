@@ -120,6 +120,17 @@ namespace RTC
 			{
 				return false;
 			}
+			// True when IsFrameStart() was derived from a slice header
+			// (H.264 first_mb_in_slice / H.265 first_slice_segment_in_pic_flag)
+			// instead of an RTP extension or codec descriptor.  Only
+			// slice-header starts carry the per-picture uniqueness contract
+			// used by Producer's frame-start conflict detector; e.g. VP9's
+			// layer-start bit legitimately repeats within one picture across
+			// spatial layers.
+			virtual bool IsFrameStartFromSliceHeader() const
+			{
+				return false;
+			}
 		};
 	} // namespace Codecs
 } // namespace RTC

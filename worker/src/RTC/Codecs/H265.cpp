@@ -39,6 +39,21 @@ namespace RTC
 				return nalType >= 16 && nalType <= 21;
 			}
 
+			// VCL NAL units (0..21) carry a slice segment header whose first
+			// bit is first_slice_segment_in_pic_flag (H.265 7.3.6.1).  It is
+			// set on exactly one slice segment per picture.
+			bool IsVclNalType(uint8_t nalType)
+			{
+				return nalType <= 21;
+			}
+
+			void ReadFirstSliceSegmentFlag(
+			  H265::PayloadDescriptor& descriptor, const uint8_t* sliceHeader)
+			{
+				descriptor.isFirstSliceCredible   = true;
+				descriptor.isFirstSliceOfPicture = (*sliceHeader & 0x80) != 0;
+			}
+
 			void RecordParameterSet(H265::PayloadDescriptor& descriptor, uint8_t nalType)
 			{
 				switch (nalType)
@@ -57,7 +72,8 @@ namespace RTC
 				}
 			}
 
-			bool ParseSingleNalUnit(H265::PayloadDescriptor& descriptor, const uint8_t* data)
+			bool ParseSingleNalUnit(
+			  H265::PayloadDescriptor& descriptor, const uint8_t* data, size_t len)
 			{
 				const uint8_t nalType = GetNalType(data);
 				if (nalType >= NalTypeAp)
@@ -69,6 +85,12 @@ namespace RTC
 				if (IsIrapNalType(nalType))
 				{
 					descriptor.isKeyFrame = true;
+				}
+				// The slice segment header follows the 2-byte NAL unit header.
+				// A truncated VCL payload without a slice header stays unknown.
+				if (IsVclNalType(nalType) && len >= 3)
+				{
+					ReadFirstSliceSegmentFlag(descriptor, data + 2);
 				}
 				return true;
 			}
@@ -107,6 +129,15 @@ namespace RTC
 					if (IsIrapNalType(nalType))
 					{
 						descriptor.isKeyFrame = true;
+					}
+					if (IsVclNalType(nalType) && naluSize >= 3)
+					{
+						const bool firstSlice = (*(data + offset + 2) & 0x80) != 0;
+						descriptor.isFirstSliceCredible = true;
+						if (firstSlice)
+						{
+							descriptor.isFirstSliceOfPicture = true;
+						}
 					}
 
 					parsedNalUnit = true;
@@ -149,6 +180,13 @@ namespace RTC
 				if (start && IsIrapNalType(fuType))
 				{
 					descriptor.isKeyFrame = true;
+				}
+				// On a start fragment the slice segment header follows the FU
+				// header (2-byte NAL header is reconstructed from the FU
+				// indicator/header pair).
+				if (start && IsVclNalType(fuType) && len >= 4)
+				{
+					ReadFirstSliceSegmentFlag(descriptor, data + 3);
 				}
 				return true;
 			}
@@ -224,7 +262,7 @@ namespace RTC
 					return nullptr;
 
 				default:
-					parsed = ParseSingleNalUnit(*payloadDescriptor, data);
+					parsed = ParseSingleNalUnit(*payloadDescriptor, data, len);
 					break;
 			}
 

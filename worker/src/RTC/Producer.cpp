@@ -10,6 +10,7 @@
 #include "RTC/RTCP/Feedback.hpp"
 #include "RTC/RTCP/XrReceiverReferenceTime.hpp"
 #include <absl/container/inlined_vector.h>
+#include <cstdlib> // std::getenv()
 #include <cstring> // std::memcpy()
 #include <string_view>
 
@@ -23,6 +24,16 @@ namespace RTC
 
 	static constexpr unsigned int SendNackDelay{ 10u }; // In ms.
 	static constexpr uint64_t KeyFrameCandidateTimeoutMs{ 500u };
+
+	// Observation-only key frame integrity mode.  Parsed per producer
+	// construction (one getenv per producer, negligible) so tests can toggle
+	// the mode inside one process.
+	bool ConfiguredKeyFrameIntegrityObserve()
+	{
+		const char* raw = std::getenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE");
+
+		return raw != nullptr && std::string_view(raw) == "observe";
+	}
 	static constexpr size_t KeyFrameHistoryMaxPackets{ 4096u };
 	static constexpr uint16_t KeyFrameMaxSequenceSpan{ 4096u };
 
@@ -36,6 +47,18 @@ namespace RTC
 	  : id(id), shared(shared), listener(listener), kind(RTC::Media::Kind(data->kind()))
 	{
 		MS_TRACE();
+
+		if (this->kind == RTC::Media::Kind::VIDEO && ConfiguredKeyFrameIntegrityObserve())
+		{
+			this->keyFrameIntegrityObserve = true;
+
+			MS_DEBUG_2TAGS(
+			  rtp, rtcp,
+			  "video key frame integrity observation enabled [producerId:%s, keyFrameRequestDelay:%" PRIu32
+			  ", mode:observe]",
+			  id.c_str(),
+			  data->keyFrameRequestDelay());
+		}
 
 		// This may throw.
 		this->rtpParameters = RTC::RtpParameters(data->rtpParameters());
@@ -659,7 +682,9 @@ namespace RTC
 		// behavior.
 		KeyFrameTrackResult keyFrameTrackResult{ KeyFrameTrackResult::IGNORED };
 
-		if (this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager)
+		const bool trackUpstreamKeyFrames = this->keyFrameIntegrityObserve ||
+		                                    (this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager);
+		if (trackUpstreamKeyFrames)
 		{
 			RecordKeyFramePacketHistory(packet);
 			keyFrameTrackResult = TrackUpstreamKeyFramePacket(packet, isRtx, nowMs);
@@ -1039,18 +1064,47 @@ namespace RTC
 		MS_TRACE();
 
 		const uint32_t ssrc = packet->GetSsrc();
-		const bool credibleFrameStart = packet->IsKeyFrame() && packet->IsFrameStart();
+		const bool credibleFrameStart = packet->IsKeyFrame() && packet->IsFrameStart() &&
+		                                !this->keyFrameStartDisabledSsrcs.contains(ssrc);
 
 		// A credible start for a new timestamp creates a new candidate without
 		// finalizing older candidates: RTX for the old timestamp may still arrive
-		// within its bounded recovery window.  A start with the same timestamp is
-		// a subsequent slice/fragment of the existing candidate.
+		// within its bounded recovery window.
 		if (credibleFrameStart)
 		{
-			auto& candidates = this->mapSsrcKeyFrameCandidates[ssrc];
-			if (candidates.find(packet->GetTimestamp()) == candidates.end())
+			auto ssrcIt = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			if (ssrcIt == this->mapSsrcKeyFrameCandidates.end() ||
+			    ssrcIt->second.find(packet->GetTimestamp()) == ssrcIt->second.end())
 			{
 				StartKeyFrameCandidate(packet, nowMs);
+			}
+			else
+			{
+				auto candidateIt = ssrcIt->second.find(packet->GetTimestamp());
+				const bool duplicateSeq =
+				  candidateIt->second->receivedSeqs.count(packet->GetSequenceNumber()) != 0u;
+				// Two distinct slice-header first-slice markers within one picture
+				// are impossible in a valid H.265 stream and indicate H.264 FMO
+				// (one first_mb==0 slice per slice group) or a corrupt stream.
+				// The frame-start evidence for this SSRC is untrustworthy: drop
+				// its candidates and stop starting new ones.  Codec descriptor
+				// starts (e.g. VP9 per-layer start bits) may legitimately repeat
+				// within one picture and are excluded.  An RTX redelivery of an
+				// already recorded sequence number is a harmless duplicate.
+				if (packet->IsFrameStartFromSliceHeader() && !isRtx && !duplicateSeq)
+				{
+					MS_WARN_2TAGS(
+					  rtp, rtcp,
+					  "upstream key frame start conflict, first-slice heuristic disabled for stream [ssrc:%" PRIu32
+					  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 "]",
+					  ssrc,
+					  packet->GetTimestamp(),
+					  packet->GetSequenceNumber());
+					this->keyFrameStartDisabledSsrcs.insert(ssrc);
+					ClearKeyFrameCandidate(ssrc, "frame_start_conflict", /*requestRecovery=*/false);
+
+					return KeyFrameTrackResult::IGNORED;
+				}
 			}
 		}
 
@@ -1199,7 +1253,8 @@ namespace RTC
 			// Only the newest started candidate may clear pending state or refresh
 			// the cadence baseline.  An older candidate completing after a newer
 			// frame started is evidence, but it must not override the newer frame.
-			if (isLatestStarted)
+			// Observation mode never lets results change request scheduling.
+			if (isLatestStarted && !this->keyFrameIntegrityObserve && this->keyFrameRequestManager)
 			{
 				this->keyFrameRequestManager->KeyFrameReceived(ssrc);
 				MarkKeyFrameCadenceBaseline(ssrc, nowMs);
@@ -1265,8 +1320,8 @@ namespace RTC
 
 		// Only the newest candidate may request recovery.  Old candidates may
 		// still time out after a newer frame started; they must not trigger an
-		// additional publisher request.
-		if (isLatestStarted && requestRecovery)
+		// additional publisher request.  Observation mode never requests.
+		if (isLatestStarted && requestRecovery && !this->keyFrameIntegrityObserve && this->keyFrameRequestManager)
 		{
 			this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
 		}
@@ -1738,6 +1793,7 @@ namespace RTC
 		// A stream rebuild invalidates receipt evidence from the old generation.
 		ClearKeyFrameCandidate(ssrc, "stream_rebuilt", /*requestRecovery=*/false);
 		this->mapSsrcKeyFramePacketHistory.erase(ssrc);
+		this->keyFrameStartDisabledSsrcs.erase(ssrc);
 
 		// Start the key frame cadence baseline for the new stream.
 		MarkKeyFrameCadenceBaseline(ssrc, DepLibUV::GetTimeMs());

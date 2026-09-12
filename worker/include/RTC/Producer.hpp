@@ -15,6 +15,7 @@
 #include "RTC/RtpStreamRecv.hpp"
 #include "RTC/Shared.hpp"
 #include "handles/TimerHandle.hpp"
+#include <absl/container/flat_hash_set.h>
 #include <map>
 #include <string>
 #include <unordered_set>
@@ -239,6 +240,14 @@ namespace RTC
 			auto candidateIt = it->second.find(latestIt->second);
 			return candidateIt == it->second.end() ? nullptr : candidateIt->second;
 		}
+		bool testKeyFrameStartHeuristicDisabled(uint32_t ssrc) const
+		{
+			return this->keyFrameStartDisabledSsrcs.contains(ssrc);
+		}
+		bool testKeyFrameIntegrityObserve() const
+		{
+			return this->keyFrameIntegrityObserve;
+		}
 		uint64_t testCompleteKeyFrameCount(uint32_t ssrc) const
 		{
 			auto it = this->mapSsrcCompleteKeyFrames.find(ssrc);
@@ -360,11 +369,21 @@ namespace RTC
 		// 0 means legacy behavior: no viewer-request suppression, no cadence
 		// watchdog, and no request coalescing window.
 		uint32_t keyFrameRequestDelay{ 0u };
+		// Observation-only key frame integrity tracking, enabled by the
+		// MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE=observe worker env var.
+		// When true, candidates/history run and complete/incomplete evidence is
+		// logged, but results never clear pending requests, refresh the cadence
+		// baseline or trigger recovery requests.
+		bool keyFrameIntegrityObserve{ false };
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcKeyFrameCadenceAtMs;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameRequestAtMs;
 		absl::flat_hash_map<uint32_t, std::map<uint32_t, KeyFrameCandidate*>> mapSsrcKeyFrameCandidates;
 		absl::flat_hash_map<uint32_t, uint32_t> mapSsrcLatestKeyFrameStartedTimestamp;
 		absl::flat_hash_map<uint32_t, KeyFramePacketHistory> mapSsrcKeyFramePacketHistory;
+		// SSRCs whose codec-level first-slice evidence proved contradictory
+		// (two distinct first-slice markers within one picture, e.g. H.264
+		// FMO).  Frame-start candidates are no longer started for these SSRCs.
+		absl::flat_hash_set<uint32_t> keyFrameStartDisabledSsrcs;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcCompleteKeyFrames;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcIncompleteKeyFrames;
 		// Viewer-request suppression diagnostics: cumulative count plus a

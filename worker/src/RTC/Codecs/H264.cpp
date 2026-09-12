@@ -76,6 +76,22 @@ namespace RTC
 					case 5:
 					{
 						payloadDescriptor->isKeyFrame = true;
+						[[fallthrough]];
+					}
+
+					// Single NAL unit packet (non-IDR slice).
+					case 1:
+					case 2:
+					case 3:
+					case 4:
+					{
+						// The slice header follows the 1-byte NAL unit header.
+						// first_mb_in_slice is ue(v); value 0 encodes as '1'.
+						if (len >= 2)
+						{
+							payloadDescriptor->isFirstSliceCredible   = true;
+							payloadDescriptor->isFirstSliceOfPicture = (*(data + 1) & 0x80) != 0;
+						}
 
 						break;
 					}
@@ -97,14 +113,23 @@ namespace RTC
 							if (subnal == 5)
 							{
 								payloadDescriptor->isKeyFrame = true;
-
-								break;
 							}
 
 							// Check if there is room for the indicated NAL unit size.
 							if (len < (naluSize + sizeof(naluSize)))
 							{
 								break;
+							}
+
+							// VCL sub-NAL: slice header follows its 1-byte NAL
+							// header.  naluSize >= 2 guarantees one header byte.
+							if (subnal >= 1 && subnal <= 5 && naluSize >= 2)
+							{
+								payloadDescriptor->isFirstSliceCredible = true;
+								if ((*(data + offset + sizeof(naluSize) + 1) & 0x80) != 0)
+								{
+									payloadDescriptor->isFirstSliceOfPicture = true;
+								}
 							}
 
 							offset += naluSize + sizeof(naluSize);
@@ -129,6 +154,14 @@ namespace RTC
 						if (subnal == 5 && startBit == 128)
 						{
 							payloadDescriptor->isKeyFrame = true;
+						}
+						// On a start fragment the slice header follows the FU
+						// header.  first_mb_in_slice is ue(v); value 0 encodes
+						// as the single bit '1'.
+						if (startBit != 0 && subnal >= 1 && subnal <= 5 && len >= 3)
+						{
+							payloadDescriptor->isFirstSliceCredible   = true;
+							payloadDescriptor->isFirstSliceOfPicture = (*(data + 2) & 0x80) != 0;
 						}
 
 						break;

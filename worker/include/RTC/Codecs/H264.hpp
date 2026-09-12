@@ -37,6 +37,19 @@ namespace RTC
 				bool hasFrameMarking{ false };
 				bool isFragmentStart{ false };
 				bool isFragmentEnd{ false };
+				// first_mb_in_slice == 0 read from the slice header.  Unlike the
+				// H.265 first_slice_segment_in_pic_flag this is a restricted
+				// heuristic: it identifies the first slice in decoding order only
+				// for streams that do not use FMO (multiple slice groups) or
+				// arbitrary slice order.  Producer keeps a runtime violation
+				// detector (two first-slice markers within one picture) and
+				// disables the heuristic per SSRC when it fires.
+				bool isFirstSliceOfPicture{ false };
+				// True when the slice header was present and readable in this
+				// packet.  A false flag from a readable header is credible
+				// evidence that this packet is NOT the first slice; a missing
+				// header is unknown, not false.
+				bool isFirstSliceCredible{ false };
 			};
 
 		public:
@@ -92,10 +105,22 @@ namespace RTC
 				}
 				bool IsFrameStart() const override
 				{
-					// FU S/E bits describe a NAL fragment, not an access-unit boundary.
-					// Without frame marking, a later slice's FU start cannot prove that
-					// the whole frame start was received.
-					return this->payloadDescriptor->hasFrameMarking && this->payloadDescriptor->s != 0;
+					// Frame marking is authoritative when negotiated; do not mix it
+					// with slice-header evidence on the same stream.
+					if (this->payloadDescriptor->hasFrameMarking)
+					{
+						return this->payloadDescriptor->s != 0;
+					}
+					// Restricted heuristic: first_mb_in_slice == 0 identifies the
+					// first slice of a picture only without FMO/ASO (see
+					// PayloadDescriptor).  A later slice can never carry
+					// first_mb == 0 in that restricted configuration.
+					return this->payloadDescriptor->isFirstSliceCredible &&
+					       this->payloadDescriptor->isFirstSliceOfPicture;
+				}
+				bool IsFrameStartFromSliceHeader() const override
+				{
+					return !this->payloadDescriptor->hasFrameMarking;
 				}
 				bool IsFrameEnd(bool rtpMarker) const override
 				{
@@ -103,9 +128,11 @@ namespace RTC
 					{
 						return this->payloadDescriptor->e != 0;
 					}
-					// FU start/end bits describe a NAL, not necessarily a whole
-					// frame.  Require the RTP marker to corroborate the final FU.
-					return this->payloadDescriptor->isFragmentEnd && rtpMarker;
+					// The RTP marker bit marks the last packet of an access unit
+					// for H.264 video (RFC 6184 5.1).  It covers FU, single NAL
+					// and STAP packets alike; a FU end bit alone only marks a NAL
+					// boundary.
+					return rtpMarker;
 				}
 
 			private:

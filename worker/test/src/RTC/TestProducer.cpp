@@ -13,6 +13,7 @@
 #include "RTC/Shared.hpp"
 #include <flatbuffers/flatbuffers.h>
 #include <algorithm>
+#include <cstdlib> // setenv(), unsetenv()
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -269,13 +270,17 @@ namespace
 
 	struct H264MediaPacket
 	{
+		// firstMb0=true writes first_mb_in_slice == 0 (ue(v) '1' bit) into the
+		// slice header carried by the FU start fragment.  firstMb0=false writes
+		// a non-zero first_mb (later slice of the same picture).
 		H264MediaPacket(
 		  uint16_t sequenceNumber,
 		  uint32_t timestamp,
 		  bool fragmentStart,
 		  bool fragmentEnd,
 		  bool marker,
-		  bool frameMarking = false)
+		  bool frameMarking = false,
+		  bool firstMb0 = false)
 		{
 			this->buffer[0] = 0x80u;
 			this->buffer[1] = PayloadType;
@@ -291,9 +296,16 @@ namespace
 				fuHeader |= 0x40u;
 			}
 			this->buffer[13] = fuHeader;
+			size_t payloadLen = 2u;
+			if (fragmentStart)
+			{
+				// Slice header first byte: first_mb_in_slice ue(v), 0 == '1'.
+				this->buffer[14] = firstMb0 ? 0x80u : 0x00u;
+				payloadLen       = 3u;
+			}
 			this->packet.reset(
 			  RTC::RtpPacket::Parse(
-			    this->buffer.data(), RTC::RtpPacket::HeaderSize + 2u, this->buffer.size()));
+			    this->buffer.data(), RTC::RtpPacket::HeaderSize + payloadLen, this->buffer.size()));
 			REQUIRE(this->packet);
 			this->packet->SetPayloadType(PayloadType);
 			this->packet->SetSequenceNumber(sequenceNumber);
@@ -322,13 +334,17 @@ namespace
 
 	struct H265MediaPacket
 	{
+		// firstSlice=true writes first_slice_segment_in_pic_flag=1 into the
+		// slice segment header carried by the FU start fragment.  firstSlice
+		// =false writes a later slice of the same picture.
 		H265MediaPacket(
 		  uint16_t sequenceNumber,
 		  uint32_t timestamp,
 		  bool fragmentStart,
 		  bool fragmentEnd,
 		  bool marker,
-		  bool frameMarking = false)
+		  bool frameMarking = false,
+		  bool firstSlice = false)
 		{
 			this->buffer[0] = 0x80u;
 			this->buffer[1] = PayloadType;
@@ -346,9 +362,16 @@ namespace
 				fuHeader |= 0x40u;
 			}
 			this->buffer[14] = fuHeader;
+			size_t payloadLen = 3u;
+			if (fragmentStart)
+			{
+				// Slice segment header first byte.
+				this->buffer[15] = firstSlice ? 0x80u : 0x00u;
+				payloadLen       = 4u;
+			}
 			this->packet.reset(
 			  RTC::RtpPacket::Parse(
-			    this->buffer.data(), RTC::RtpPacket::HeaderSize + 3u, this->buffer.size()));
+			    this->buffer.data(), RTC::RtpPacket::HeaderSize + payloadLen, this->buffer.size()));
 			REQUIRE(this->packet);
 			this->packet->SetPayloadType(PayloadType);
 			this->packet->SetSequenceNumber(sequenceNumber);
@@ -1107,6 +1130,259 @@ TEST_CASE(
 	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
 	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
 	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+
+TEST_CASE(
+  "Producer key frame tracker uses H265 first_slice_segment_in_pic_flag boundaries",
+  "[producer][keyframe][completeness][h265][first-slice]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
+	RTC::Producer producer(&shared, "producer-keyframe-h265-first-slice", &listener, request);
+
+	H265MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(start.packet->IsKeyFrame());
+	REQUIRE(start.packet->IsFrameStart());
+	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+
+	H265MediaPacket middle(101u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H265MediaPacket tail(102u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker rejects a multi-slice H265 key frame whose first slice was lost",
+  "[producer][keyframe][completeness][h265][first-slice]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
+	RTC::Producer producer(&shared, "producer-keyframe-h265-slice2-first", &listener, request);
+
+	// Slice 1 (the picture start with first_slice_segment_in_pic_flag=1) is
+	// lost.  Slice 2's FU start fragment must not be mistaken for a frame
+	// start: its slice header says first_slice=0.
+	H265MediaPacket slice2Start(101u, 90000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/false);
+	CHECK(
+	  producer.ReceiveRtpPacket(slice2Start.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(slice2Start.packet->IsKeyFrame());
+	REQUIRE_FALSE(slice2Start.packet->IsFrameStart());
+
+	H265MediaPacket middle(102u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H265MediaPacket tail(103u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker completes a single-NAL H265 key frame via the RTP marker",
+  "[producer][keyframe][completeness][h265][single-nal]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
+	RTC::Producer producer(&shared, "producer-keyframe-h265-single-nal", &listener, request);
+
+	// A whole IDR NAL in one RTP packet: 2-byte NAL header (IDR_W_RADL=19)
+	// followed by a slice segment header with first_slice=1.
+	std::array<uint8_t, 1600u> buffer{};
+	buffer[0]  = 0x80u;
+	buffer[1]  = PayloadType;
+	buffer[12] = 19u << 1;
+	buffer[13] = 0x01u;
+	buffer[14] = 0x80u;
+	auto packet = std::unique_ptr<RTC::RtpPacket>(
+	  RTC::RtpPacket::Parse(buffer.data(), RTC::RtpPacket::HeaderSize + 3u, buffer.size()));
+	REQUIRE(packet);
+	packet->SetPayloadType(PayloadType);
+	packet->SetSequenceNumber(100u);
+	packet->SetTimestamp(90000u);
+	packet->SetSsrc(ProducerSsrc);
+	packet->SetMarker(true);
+
+	CHECK(producer.ReceiveRtpPacket(packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(packet->IsKeyFrame());
+	REQUIRE(packet->IsFrameStart());
+	REQUIRE(packet->IsFrameEnd(true));
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker uses H264 first_mb_in_slice boundaries",
+  "[producer][keyframe][completeness][h264][first-slice]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-h264-first-slice", &listener, request);
+
+	H264MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(start.packet->IsKeyFrame());
+	REQUIRE(start.packet->IsFrameStart());
+	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+
+	H264MediaPacket middle(101u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket tail(102u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker rejects a multi-slice H264 key frame whose first slice was lost",
+  "[producer][keyframe][completeness][h264][first-slice]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-h264-slice2-first", &listener, request);
+
+	// First slice (first_mb_in_slice == 0) is lost.  Slice 2's FU start with
+	// a non-zero first_mb must not be mistaken for a frame start.
+	H264MediaPacket slice2Start(101u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/false);
+	CHECK(
+	  producer.ReceiveRtpPacket(slice2Start.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(slice2Start.packet->IsKeyFrame());
+	REQUIRE_FALSE(slice2Start.packet->IsFrameStart());
+
+	H264MediaPacket middle(102u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket tail(103u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker disables the first-slice heuristic on an H264 FMO-like conflict",
+  "[producer][keyframe][completeness][h264][first-slice][fmo]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-h264-fmo-conflict", &listener, request);
+
+	// Slice group 0 first slice.
+	H264MediaPacket firstStart(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(firstStart.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+
+	// A second, different first_mb==0 start within the same picture is FMO
+	// evidence: the heuristic must be disabled and candidates dropped instead
+	// of risking a false complete.
+	H264MediaPacket secondStart(103u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(secondStart.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK(producer.testKeyFrameStartHeuristicDisabled(ProducerSsrc));
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
+
+	// Even a fully received later key frame must not start a candidate once
+	// the heuristic is disabled for this SSRC.
+	H264MediaPacket nextStart(200u, 91000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(nextStart.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+}
+
+TEST_CASE(
+  "Producer key frame integrity observe mode logs evidence without changing request scheduling",
+  "[producer][keyframe][completeness][observe]")
+{
+	REQUIRE(setenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE", "observe", 1) == 0);
+
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	// Delay > 0 with observe mode: tracking runs, but complete/incomplete must
+	// not clear pending state, refresh the cadence baseline or request recovery.
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
+	RTC::Producer producer(&shared, "producer-keyframe-observe", &listener, request);
+	REQUIRE(producer.testKeyFrameIntegrityObserve());
+
+	// Complete key frame: evidence is counted but no request bookkeeping runs.
+	H265MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H265MediaPacket tail(101u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(listener.sentRtcpPackets.empty());
+
+	// Incomplete key frame (tail lost): the timeout classifies it incomplete
+	// but must NOT emit a recovery PLI in observe mode.
+	H265MediaPacket lostStart(200u, 91000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(lostStart.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H265MediaPacket lostMiddle(201u, 91000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(lostMiddle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(550u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(listener.sentRtcpPackets.empty());
+
+	unsetenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE");
 }
 
 TEST_CASE(

@@ -738,6 +738,11 @@ namespace RTC
 		{
 			return this->payloadDescriptorHandler && this->payloadDescriptorHandler->IsFrameStart();
 		}
+		bool IsFrameStartFromSliceHeader() const
+		{
+			return this->payloadDescriptorHandler &&
+			       this->payloadDescriptorHandler->IsFrameStartFromSliceHeader();
+		}
 
 		bool IsFrameEnd(bool rtpMarker) const
 		{
