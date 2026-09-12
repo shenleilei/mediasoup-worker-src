@@ -524,14 +524,15 @@ namespace RTC
 		  // rtpPacketLossSent.
 		  this->tccClient ? flatbuffers::Optional<double>(this->tccClient->GetPacketLoss())
 		                  : flatbuffers::nullopt,
-		  // rtpPacketsSendOk.
-		  this->rtpPacketsSendOk,
+		  // rtpPacketsSendOk (optional: absent = worker predates send-stage
+		  // counters; the parent must never read absence as zero).
+		  flatbuffers::Optional<uint64_t>(this->rtpPacketsSendOk),
 		  // rtpPacketsDroppedNotConnected.
-		  this->rtpPacketsDroppedNotConnected,
+		  flatbuffers::Optional<uint64_t>(this->rtpPacketsDroppedNotConnected),
 		  // rtpPacketsDroppedNoSrtp.
-		  this->rtpPacketsDroppedNoSrtp,
+		  flatbuffers::Optional<uint64_t>(this->rtpPacketsDroppedNoSrtp),
 		  // rtpPacketsDroppedEncryptFailed.
-		  this->rtpPacketsDroppedEncryptFailed);
+		  flatbuffers::Optional<uint64_t>(this->rtpPacketsDroppedEncryptFailed));
 	}
 
 	void Transport::HandleRequest(Channel::ChannelRequest* request)
@@ -2726,7 +2727,8 @@ namespace RTC
 		this->sendRtxTransmission.Update(packet);
 	}
 
-	inline void Transport::OnConsumerKeyFrameRequested(RTC::Consumer* consumer, uint32_t mappedSsrc)
+	inline void Transport::OnConsumerKeyFrameRequested(
+	  RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp)
 	{
 		MS_TRACE();
 
@@ -2737,7 +2739,7 @@ namespace RTC
 			return;
 		}
 
-		this->listener->OnTransportConsumerKeyFrameRequested(this, consumer, mappedSsrc);
+		this->listener->OnTransportConsumerKeyFrameRequested(this, consumer, mappedSsrc, fromViewerRtcp);
 	}
 
 	inline void Transport::OnConsumerNeedBitrateChange(RTC::Consumer* /*consumer*/)

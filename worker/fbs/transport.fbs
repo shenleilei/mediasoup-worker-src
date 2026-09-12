@@ -183,10 +183,10 @@ table Stats {
     // Send-stage truth (append-only): RtpStreamSend counters update BEFORE
     // the transport stage, so "decided to send" is not "actually sent".
     // These count the WebRtcTransport::SendRtpPacket outcome itself.
-    rtp_packets_send_ok: uint64;
-    rtp_packets_dropped_not_connected: uint64;
-    rtp_packets_dropped_no_srtp: uint64;
-    rtp_packets_dropped_encrypt_failed: uint64;
+    rtp_packets_send_ok: uint64 = null;
+    rtp_packets_dropped_not_connected: uint64 = null;
+    rtp_packets_dropped_no_srtp: uint64 = null;
+    rtp_packets_dropped_encrypt_failed: uint64 = null;
 }
 
 table SetMaxIncomingBitrateRequest {
