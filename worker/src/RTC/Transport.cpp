@@ -523,7 +523,15 @@ namespace RTC
 		                  : flatbuffers::nullopt,
 		  // rtpPacketLossSent.
 		  this->tccClient ? flatbuffers::Optional<double>(this->tccClient->GetPacketLoss())
-		                  : flatbuffers::nullopt);
+		                  : flatbuffers::nullopt,
+		  // rtpPacketsSendOk.
+		  this->rtpPacketsSendOk,
+		  // rtpPacketsDroppedNotConnected.
+		  this->rtpPacketsDroppedNotConnected,
+		  // rtpPacketsDroppedNoSrtp.
+		  this->rtpPacketsDroppedNoSrtp,
+		  // rtpPacketsDroppedEncryptFailed.
+		  this->rtpPacketsDroppedEncryptFailed);
 	}
 
 	void Transport::HandleRequest(Channel::ChannelRequest* request)

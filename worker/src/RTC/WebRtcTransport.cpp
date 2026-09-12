@@ -723,6 +723,8 @@ namespace RTC
 
 		if (!IsConnected())
 		{
+			this->rtpPacketsDroppedNotConnected++;
+
 			if (cb)
 			{
 				(*cb)(false);
@@ -736,6 +738,7 @@ namespace RTC
 		if (!this->srtpSendSession)
 		{
 			MS_WARN_DEV("ignoring RTP packet due to non sending SRTP session");
+			this->rtpPacketsDroppedNoSrtp++;
 
 			if (cb)
 			{
@@ -751,6 +754,8 @@ namespace RTC
 
 		if (!this->srtpSendSession->EncryptRtp(&data, &len))
 		{
+			this->rtpPacketsDroppedEncryptFailed++;
+
 			if (cb)
 			{
 				(*cb)(false);
@@ -760,6 +765,7 @@ namespace RTC
 			return;
 		}
 
+		this->rtpPacketsSendOk++;
 		this->iceServer->GetSelectedTuple()->Send(data, len, cb);
 
 		// Increase send transmission.

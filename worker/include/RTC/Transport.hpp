@@ -359,6 +359,16 @@ namespace RTC
 		RTC::RtpListener rtpListener;
 		RTC::SctpListener sctpListener;
 		RTC::RateCalculator recvTransmission;
+	protected:
+		// Send-stage truth (2026-09-12): RtpStreamSend counters update before
+		// the transport stage; these count the actual SendRtpPacket outcome so
+		// a flat egress counter can be attributed to transport drops.
+		uint64_t rtpPacketsSendOk{ 0 };
+		uint64_t rtpPacketsDroppedNotConnected{ 0 };
+		uint64_t rtpPacketsDroppedNoSrtp{ 0 };
+		uint64_t rtpPacketsDroppedEncryptFailed{ 0 };
+
+	private:
 		RTC::RateCalculator sendTransmission;
 		RTC::RtpDataCounter recvRtpTransmission;
 		RTC::RtpDataCounter sendRtpTransmission;
