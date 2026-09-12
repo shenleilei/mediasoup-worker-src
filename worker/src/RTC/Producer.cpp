@@ -1039,55 +1039,36 @@ namespace RTC
 		MS_TRACE();
 
 		const uint32_t ssrc = packet->GetSsrc();
-		auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
 		const bool credibleFrameStart = packet->IsKeyFrame() && packet->IsFrameStart();
 
+		// A credible start for a new timestamp creates a new candidate without
+		// finalizing older candidates: RTX for the old timestamp may still arrive
+		// within its bounded recovery window.  A start with the same timestamp is
+		// a subsequent slice/fragment of the existing candidate.
 		if (credibleFrameStart)
 		{
-			if (it != this->mapSsrcKeyFrameCandidates.end())
-			{
-				auto* candidate = it->second;
-
-				// A later key-frame start supersedes an unfinished candidate.
-				// Another key-frame-marked packet with the SAME timestamp is a
-				// subsequent slice/fragment, not a new frame head.
-				if (candidate->timestamp != packet->GetTimestamp())
-				{
-					FinalizeKeyFrameCandidate(
-					  ssrc, candidate, "superseded", /*complete=*/false, /*requestRecovery=*/true, nowMs);
-					it = this->mapSsrcKeyFrameCandidates.end();
-				}
-			}
-
-			if (it == this->mapSsrcKeyFrameCandidates.end())
+			auto& candidates = this->mapSsrcKeyFrameCandidates[ssrc];
+			if (candidates.find(packet->GetTimestamp()) == candidates.end())
 			{
 				StartKeyFrameCandidate(packet, nowMs);
-				it = this->mapSsrcKeyFrameCandidates.find(ssrc);
 			}
 		}
 
-		if (it == this->mapSsrcKeyFrameCandidates.end())
+		auto ssrcIt = this->mapSsrcKeyFrameCandidates.find(ssrc);
+		if (ssrcIt == this->mapSsrcKeyFrameCandidates.end())
 		{
 			return KeyFrameTrackResult::IGNORED;
 		}
 
-		auto* candidate = it->second;
-
-		// A newer timestamp means the old frame is over.  If its credible end or
-		// any packet was missing, it cannot be claimed complete.
-		if (packet->GetTimestamp() != candidate->timestamp)
+		auto candidateIt = ssrcIt->second.find(packet->GetTimestamp());
+		if (candidateIt == ssrcIt->second.end())
 		{
-			if (RTC::SeqManager<uint32_t>::IsSeqHigherThan(packet->GetTimestamp(), candidate->timestamp))
-			{
-				FinalizeKeyFrameCandidate(
-				  ssrc, candidate, "new_frame", /*complete=*/false, /*requestRecovery=*/true, nowMs);
-				return KeyFrameTrackResult::FINALIZED;
-			}
-
-			// Old RTX/misordered traffic for another timestamp is irrelevant.
-			return KeyFrameTrackResult::ACTIVE;
+			// No candidate for this timestamp.  Leave older candidates active and
+			// let the cadence watchdog inspect ordinary non-key-frame traffic.
+			return KeyFrameTrackResult::IGNORED;
 		}
 
+		auto* candidate = candidateIt->second;
 		const bool newlyInserted = candidate->receivedSeqs.insert(packet->GetSequenceNumber()).second;
 		if (newlyInserted && isRtx)
 		{
@@ -1155,7 +1136,13 @@ namespace RTC
 			}
 		}
 
-		this->mapSsrcKeyFrameCandidates[ssrc] = candidate;
+		auto latestIt = this->mapSsrcLatestKeyFrameStartedTimestamp.find(ssrc);
+		if (latestIt == this->mapSsrcLatestKeyFrameStartedTimestamp.end() ||
+		    RTC::SeqManager<uint32_t>::IsSeqHigherThan(candidate->timestamp, latestIt->second))
+		{
+			this->mapSsrcLatestKeyFrameStartedTimestamp[ssrc] = candidate->timestamp;
+		}
+		this->mapSsrcKeyFrameCandidates[ssrc][candidate->timestamp] = candidate;
 
 		MS_DEBUG_TAG(
 		  rtp,
@@ -1185,33 +1172,51 @@ namespace RTC
 		const size_t repairedPackets = candidate->repairedPackets;
 		const uint64_t waitedMs = nowMs - candidate->startedAtMs;
 
+		auto latestStartedIt = this->mapSsrcLatestKeyFrameStartedTimestamp.find(ssrc);
+		const bool isLatestStarted =
+		  latestStartedIt != this->mapSsrcLatestKeyFrameStartedTimestamp.end() &&
+		  latestStartedIt->second == timestamp;
+		auto ssrcIt = this->mapSsrcKeyFrameCandidates.find(ssrc);
+
 		candidate->timer->Stop();
 		delete candidate->timer;
 		candidate->timer = nullptr;
-		this->mapSsrcKeyFrameCandidates.erase(ssrc);
+
+		if (ssrcIt != this->mapSsrcKeyFrameCandidates.end())
+		{
+			ssrcIt->second.erase(timestamp);
+			if (ssrcIt->second.empty())
+			{
+				this->mapSsrcKeyFrameCandidates.erase(ssrcIt);
+			}
+		}
 		delete candidate;
 
 		if (complete)
 		{
 			++this->mapSsrcCompleteKeyFrames[ssrc];
 
-			// Only a complete key frame clears a pending request and refreshes
-			// the cadence baseline.
-			this->keyFrameRequestManager->KeyFrameReceived(ssrc);
-			MarkKeyFrameCadenceBaseline(ssrc, nowMs);
+			// Only the newest started candidate may clear pending state or refresh
+			// the cadence baseline.  An older candidate completing after a newer
+			// frame started is evidence, but it must not override the newer frame.
+			if (isLatestStarted)
+			{
+				this->keyFrameRequestManager->KeyFrameReceived(ssrc);
+				MarkKeyFrameCadenceBaseline(ssrc, nowMs);
+			}
 
 			MS_DEBUG_TAG(
 			  rtp,
 			  "upstream key frame complete [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
-			  ", repairedPackets:%zu, waitedMs:%" PRIu64 "]",
+			  ", repairedPackets:%zu, waitedMs:%" PRIu64 ", latest:%s]",
 			  ssrc,
 			  timestamp,
 			  startSeq,
 			  endSeq,
 			  repairedPackets,
-			  waitedMs);
-			// Intentionally no request: recovery is complete.
+			  waitedMs,
+			  isLatestStarted ? "true" : "false");
 			(void)requestRecovery;
 
 			return;
@@ -1226,7 +1231,7 @@ namespace RTC
 			  "upstream key frame incomplete [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
 			  ", hasEnd:%s, missingPackets:%zu, repairedPackets:%zu, waitedMs:%" PRIu64
-			  ", reason:%s]",
+			  ", latest:%s, reason:%s]",
 			  ssrc,
 			  timestamp,
 			  startSeq,
@@ -1235,6 +1240,7 @@ namespace RTC
 			  missingPackets,
 			  repairedPackets,
 			  waitedMs,
+			  isLatestStarted ? "true" : "false",
 			  reason);
 		}
 		else
@@ -1244,7 +1250,7 @@ namespace RTC
 			  "upstream key frame incomplete [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
 			  ", hasEnd:%s, missingPackets:%zu, repairedPackets:%zu, waitedMs:%" PRIu64
-			  ", reason:%s]",
+			  ", latest:%s, reason:%s]",
 			  ssrc,
 			  timestamp,
 			  startSeq,
@@ -1253,10 +1259,14 @@ namespace RTC
 			  missingPackets,
 			  repairedPackets,
 			  waitedMs,
+			  isLatestStarted ? "true" : "false",
 			  reason);
 		}
 
-		if (requestRecovery)
+		// Only the newest candidate may request recovery.  Old candidates may
+		// still time out after a newer frame started; they must not trigger an
+		// additional publisher request.
+		if (isLatestStarted && requestRecovery)
 		{
 			this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
 		}
@@ -1370,20 +1380,34 @@ namespace RTC
 			return;
 		}
 
-		FinalizeKeyFrameCandidate(
-		  ssrc, it->second, reason, /*complete=*/false, requestRecovery, DepLibUV::GetTimeMs());
+		std::vector<KeyFrameCandidate*> candidates;
+		candidates.reserve(it->second.size());
+		for (auto& kv : it->second)
+		{
+			candidates.push_back(kv.second);
+		}
+
+		for (auto* candidate : candidates)
+		{
+			FinalizeKeyFrameCandidate(
+			  ssrc, candidate, reason, /*complete=*/false, requestRecovery, DepLibUV::GetTimeMs());
+		}
+		this->mapSsrcLatestKeyFrameStartedTimestamp.erase(ssrc);
 	}
 
 	void Producer::ClearKeyFrameCandidates(const char* reason, bool requestRecovery)
 	{
 		MS_TRACE();
 
-		// Finalize one at a time: FinalizeKeyFrameCandidate() erases from the map.
-		while (!this->mapSsrcKeyFrameCandidates.empty())
+		std::vector<uint32_t> ssrcs;
+		ssrcs.reserve(this->mapSsrcKeyFrameCandidates.size());
+		for (const auto& kv : this->mapSsrcKeyFrameCandidates)
 		{
-			auto it = this->mapSsrcKeyFrameCandidates.begin();
-			const uint32_t ssrc = it->first;
+			ssrcs.push_back(kv.first);
+		}
 
+		for (auto ssrc : ssrcs)
+		{
 			ClearKeyFrameCandidate(ssrc, reason, requestRecovery);
 		}
 	}
@@ -2362,21 +2386,24 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		for (auto& kv : this->mapSsrcKeyFrameCandidates)
+		for (auto& ssrcKv : this->mapSsrcKeyFrameCandidates)
 		{
-			if (kv.second->timer != timer)
+			for (auto& timestampKv : ssrcKv.second)
 			{
-				continue;
-			}
+				if (timestampKv.second->timer != timer)
+				{
+					continue;
+				}
 
-			FinalizeKeyFrameCandidate(
-			  kv.first,
-			  kv.second,
-			  "timeout",
-			  /*complete=*/false,
-			  /*requestRecovery=*/true,
-			  DepLibUV::GetTimeMs());
-			return;
+				FinalizeKeyFrameCandidate(
+				  ssrcKv.first,
+				  timestampKv.second,
+				  "timeout",
+				  /*complete=*/false,
+				  /*requestRecovery=*/true,
+				  DepLibUV::GetTimeMs());
+				return;
+			}
 		}
 	}
 

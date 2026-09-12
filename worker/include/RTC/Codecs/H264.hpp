@@ -92,9 +92,10 @@ namespace RTC
 				}
 				bool IsFrameStart() const override
 				{
-					return this->payloadDescriptor->hasFrameMarking
-					         ? this->payloadDescriptor->s != 0
-					         : this->payloadDescriptor->isFragmentStart;
+					// FU S/E bits describe a NAL fragment, not an access-unit boundary.
+					// Without frame marking, a later slice's FU start cannot prove that
+					// the whole frame start was received.
+					return this->payloadDescriptor->hasFrameMarking && this->payloadDescriptor->s != 0;
 				}
 				bool IsFrameEnd(bool rtpMarker) const override
 				{

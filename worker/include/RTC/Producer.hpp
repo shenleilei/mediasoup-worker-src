@@ -15,6 +15,7 @@
 #include "RTC/RtpStreamRecv.hpp"
 #include "RTC/Shared.hpp"
 #include "handles/TimerHandle.hpp"
+#include <map>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -79,7 +80,8 @@ namespace RTC
 		// Bounded uplink key-frame receipt evidence.  A candidate starts only at
 		// a codec-parsed frame start; it is complete only when a codec-parsed
 		// (and, where needed, marker-corroborated) frame end is seen and every
-		// sequence number in the start..end interval has been received.
+		// sequence number in the start..end interval has been received.  Candidates
+		// for different timestamps may coexist while RTX repair is still possible.
 		struct KeyFrameCandidate
 		{
 			uint32_t timestamp{ 0u };
@@ -214,7 +216,28 @@ namespace RTC
 #ifdef MS_TEST
 		bool testHasKeyFrameCandidate(uint32_t ssrc) const
 		{
-			return this->mapSsrcKeyFrameCandidates.contains(ssrc);
+			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			return it != this->mapSsrcKeyFrameCandidates.end() && !it->second.empty();
+		}
+		size_t testKeyFrameCandidateCount(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			return it == this->mapSsrcKeyFrameCandidates.end() ? 0u : it->second.size();
+		}
+		KeyFrameCandidate* testFindLatestKeyFrameCandidate(uint32_t ssrc) const
+		{
+			auto latestIt = this->mapSsrcLatestKeyFrameStartedTimestamp.find(ssrc);
+			if (latestIt == this->mapSsrcLatestKeyFrameStartedTimestamp.end())
+			{
+				return nullptr;
+			}
+			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			if (it == this->mapSsrcKeyFrameCandidates.end())
+			{
+				return nullptr;
+			}
+			auto candidateIt = it->second.find(latestIt->second);
+			return candidateIt == it->second.end() ? nullptr : candidateIt->second;
 		}
 		uint64_t testCompleteKeyFrameCount(uint32_t ssrc) const
 		{
@@ -226,20 +249,20 @@ namespace RTC
 			auto it = this->mapSsrcIncompleteKeyFrames.find(ssrc);
 			return it == this->mapSsrcIncompleteKeyFrames.end() ? 0u : it->second;
 		}
-		size_t testKeyFrameCandidateReceivedPackets(uint32_t ssrc) const
+		size_t testLatestKeyFrameCandidateReceivedPackets(uint32_t ssrc) const
 		{
-			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
-			return it == this->mapSsrcKeyFrameCandidates.end() ? 0u : it->second->receivedSeqs.size();
+			auto* candidate = this->testFindLatestKeyFrameCandidate(ssrc);
+			return candidate ? candidate->receivedSeqs.size() : 0u;
 		}
-		bool testKeyFrameCandidateHasEnd(uint32_t ssrc) const
+		bool testLatestKeyFrameCandidateHasEnd(uint32_t ssrc) const
 		{
-			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
-			return it != this->mapSsrcKeyFrameCandidates.end() && it->second->hasEnd;
+			auto* candidate = this->testFindLatestKeyFrameCandidate(ssrc);
+			return candidate && candidate->hasEnd;
 		}
-		uint16_t testKeyFrameCandidateEndSeq(uint32_t ssrc) const
+		uint16_t testLatestKeyFrameCandidateEndSeq(uint32_t ssrc) const
 		{
-			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
-			return it == this->mapSsrcKeyFrameCandidates.end() ? 0u : it->second->endSeq;
+			auto* candidate = this->testFindLatestKeyFrameCandidate(ssrc);
+			return candidate ? candidate->endSeq : 0u;
 		}
 #endif
 
@@ -339,7 +362,8 @@ namespace RTC
 		uint32_t keyFrameRequestDelay{ 0u };
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcKeyFrameCadenceAtMs;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameRequestAtMs;
-		absl::flat_hash_map<uint32_t, KeyFrameCandidate*> mapSsrcKeyFrameCandidates;
+		absl::flat_hash_map<uint32_t, std::map<uint32_t, KeyFrameCandidate*>> mapSsrcKeyFrameCandidates;
+		absl::flat_hash_map<uint32_t, uint32_t> mapSsrcLatestKeyFrameStartedTimestamp;
 		absl::flat_hash_map<uint32_t, KeyFramePacketHistory> mapSsrcKeyFramePacketHistory;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcCompleteKeyFrames;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcIncompleteKeyFrames;

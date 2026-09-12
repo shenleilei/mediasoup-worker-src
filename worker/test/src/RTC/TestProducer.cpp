@@ -47,7 +47,8 @@ namespace
 	  uint32_t keyFrameRequestDelay = 0u,
 	  bool withPliFeedback = false,
 	  const char* mimeType = "video/VP8",
-	  bool withRtx = false)
+	  bool withRtx = false,
+	  bool withFrameMarking = false)
 	{
 		std::vector<flatbuffers::Offset<FBS::RtpParameters::Parameter>> codecParameters;
 		std::vector<flatbuffers::Offset<FBS::RtpParameters::RtcpFeedback>> rtcpFeedback;
@@ -65,6 +66,12 @@ namespace
 		headerExtensions.emplace_back(
 		  FBS::RtpParameters::CreateRtpHeaderExtensionParametersDirect(
 		    builder, FBS::RtpParameters::RtpHeaderExtensionUri::AbsCaptureTime, 9u));
+		if (withFrameMarking)
+		{
+			headerExtensions.emplace_back(
+			  FBS::RtpParameters::CreateRtpHeaderExtensionParametersDirect(
+			    builder, FBS::RtpParameters::RtpHeaderExtensionUri::FrameMarking, 10u));
+		}
 
 		auto codec = FBS::RtpParameters::CreateRtpCodecParametersDirect(
 		  builder, mimeType, PayloadType, 90000u, flatbuffers::nullopt, &codecParameters, &rtcpFeedback);
@@ -267,7 +274,8 @@ namespace
 		  uint32_t timestamp,
 		  bool fragmentStart,
 		  bool fragmentEnd,
-		  bool marker)
+		  bool marker,
+		  bool frameMarking = false)
 		{
 			this->buffer[0] = 0x80u;
 			this->buffer[1] = PayloadType;
@@ -291,6 +299,20 @@ namespace
 			this->packet->SetSequenceNumber(sequenceNumber);
 			this->packet->SetTimestamp(timestamp);
 			this->packet->SetSsrc(ProducerSsrc);
+			if (frameMarking)
+			{
+				uint8_t frameMarkingValue{ 0u };
+				if (fragmentStart) frameMarkingValue |= 0x80u;
+				if (fragmentEnd) frameMarkingValue |= 0x40u;
+				if (fragmentStart) frameMarkingValue |= 0x20u;
+				std::array<uint8_t, 3u> frameMarkingBytes{
+					frameMarkingValue, 0u, 0u
+				};
+				std::vector<RTC::RtpPacket::GenericExtension> extensions{
+					{10u, static_cast<uint8_t>(frameMarkingBytes.size()), frameMarkingBytes.data()}
+				};
+				REQUIRE(this->packet->SetExtensions(1u, extensions));
+			}
 			this->packet->SetMarker(marker);
 		}
 
@@ -305,7 +327,8 @@ namespace
 		  uint32_t timestamp,
 		  bool fragmentStart,
 		  bool fragmentEnd,
-		  bool marker)
+		  bool marker,
+		  bool frameMarking = false)
 		{
 			this->buffer[0] = 0x80u;
 			this->buffer[1] = PayloadType;
@@ -331,6 +354,20 @@ namespace
 			this->packet->SetSequenceNumber(sequenceNumber);
 			this->packet->SetTimestamp(timestamp);
 			this->packet->SetSsrc(ProducerSsrc);
+			if (frameMarking)
+			{
+				uint8_t frameMarkingValue{ 0u };
+				if (fragmentStart) frameMarkingValue |= 0x80u;
+				if (fragmentEnd) frameMarkingValue |= 0x40u;
+				if (fragmentStart) frameMarkingValue |= 0x20u;
+				std::array<uint8_t, 3u> frameMarkingBytes{
+					frameMarkingValue, 0u, 0u
+				};
+				std::vector<RTC::RtpPacket::GenericExtension> extensions{
+					{10u, static_cast<uint8_t>(frameMarkingBytes.size()), frameMarkingBytes.data()}
+				};
+				REQUIRE(this->packet->SetExtensions(1u, extensions));
+			}
 			this->packet->SetMarker(marker);
 		}
 
@@ -914,7 +951,58 @@ TEST_CASE(
 
 
 TEST_CASE(
-  "Producer key frame tracker uses H265 FU boundaries",
+  "Producer key frame tracker keeps an old candidate alive across a newer frame",
+  "[producer][keyframe][completeness][rtx]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder,
+	  /*keyFrameRequestDelay=*/400u,
+	  /*withPliFeedback=*/true,
+	  "video/VP9",
+	  /*withRtx=*/true);
+	RTC::Producer producer(&shared, "producer-keyframe-old-candidate-rtx", &listener, request);
+
+	// Key frame at timestamp 90000 is missing seq 101.
+	Vp9MediaPacket start(100u, 90000u, true, false, false);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	Vp9MediaPacket tail(102u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	REQUIRE(producer.testKeyFrameCandidateCount(ProducerSsrc) == 1u);
+
+	// A newer non-key-frame timestamp arrives before RTX.  It must not finalize
+	// or delete the old candidate.
+	Vp9MediaPacket nextFrame(103u, 90360u, false, false, false, /*keyFrame=*/false);
+	CHECK(
+	  producer.ReceiveRtpPacket(nextFrame.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	REQUIRE(producer.testKeyFrameCandidateCount(ProducerSsrc) == 1u);
+
+	// Let the NACK generator emit the NACK for seq 101, then repair the old
+	// timestamp through RTX.  The old candidate must still accept it.
+	std::this_thread::sleep_for(std::chrono::milliseconds(60u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	Vp9MediaPacket lostMiddle(101u, 90000u, false, false, false);
+	std::unique_ptr<RTC::RtpPacket> rtxPacket(lostMiddle.packet->Clone());
+	REQUIRE(rtxPacket->RtxEncode(RtxPayloadType, RtxSsrc, 9000u));
+	CHECK(
+	  producer.ReceiveRtpPacket(rtxPacket.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::RETRANSMISSION);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker does not infer an H265 frame start from a FU start",
   "[producer][keyframe][completeness][h265]")
 {
 	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
@@ -928,27 +1016,25 @@ TEST_CASE(
 	H265MediaPacket start(100u, 90000u, true, false, false);
 	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 	REQUIRE(start.packet->IsKeyFrame());
-	REQUIRE(start.packet->IsFrameStart());
-	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	// FU S is a NAL-fragment boundary.  Without frame marking it cannot prove
+	// that an earlier slice of the same access unit was received.
+	REQUIRE_FALSE(start.packet->IsFrameStart());
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
 
 	H265MediaPacket middle(101u, 90000u, false, false, false);
 	CHECK(
 	  producer.ReceiveRtpPacket(middle.packet.get()) ==
 	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
-
-	// Without frame-marking, the FU end is only credible together with the RTP
-	// marker on the same packet.
 	H265MediaPacket tail(102u, 90000u, false, true, true);
 	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 
 	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
-	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
 	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
 }
 
-
 TEST_CASE(
-  "Producer key frame tracker uses H264 FU boundaries",
+  "Producer key frame tracker does not infer an H264 frame start from a FU start",
   "[producer][keyframe][completeness][h264]")
 {
 	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
@@ -962,6 +1048,41 @@ TEST_CASE(
 	H264MediaPacket start(100u, 90000u, true, false, false);
 	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 	REQUIRE(start.packet->IsKeyFrame());
+	REQUIRE_FALSE(start.packet->IsFrameStart());
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+
+	H264MediaPacket middle(101u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket tail(102u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker uses H264 frame marking boundaries",
+  "[producer][keyframe][completeness][h264][frame-marking]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder,
+	  /*keyFrameRequestDelay=*/400u,
+	  /*withPliFeedback=*/true,
+	  "video/H264",
+	  /*withRtx=*/false,
+	  /*withFrameMarking=*/true);
+	RTC::Producer producer(&shared, "producer-keyframe-h264-frame-marking", &listener, request);
+
+	H264MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/true);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(start.packet->IsKeyFrame());
 	REQUIRE(start.packet->IsFrameStart());
 	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
 
@@ -969,7 +1090,42 @@ TEST_CASE(
 	CHECK(
 	  producer.ReceiveRtpPacket(middle.packet.get()) ==
 	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
-	H264MediaPacket tail(102u, 90000u, false, true, true);
+	H264MediaPacket tail(102u, 90000u, false, true, true, /*frameMarking=*/true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame tracker uses H265 frame marking boundaries",
+  "[producer][keyframe][completeness][h265][frame-marking]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder,
+	  /*keyFrameRequestDelay=*/400u,
+	  /*withPliFeedback=*/true,
+	  "video/H265",
+	  /*withRtx=*/false,
+	  /*withFrameMarking=*/true);
+	RTC::Producer producer(&shared, "producer-keyframe-h265-frame-marking", &listener, request);
+
+	H265MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/true);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(start.packet->IsKeyFrame());
+	REQUIRE(start.packet->IsFrameStart());
+	REQUIRE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+
+	H265MediaPacket middle(101u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H265MediaPacket tail(102u, 90000u, false, true, true, /*frameMarking=*/true);
 	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 
 	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
