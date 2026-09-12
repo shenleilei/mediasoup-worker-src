@@ -497,7 +497,7 @@ namespace RTC
 
 		if (IsActive())
 		{
-			RequestKeyFrame();
+			RequestKeyFrame(/*fromViewerRtcp=*/true);
 		}
 	}
 
@@ -748,7 +748,7 @@ namespace RTC
 		}
 	}
 
-	void PipeConsumer::RequestKeyFrame()
+	void PipeConsumer::RequestKeyFrame(bool fromViewerRtcp)
 	{
 		MS_TRACE();
 
@@ -761,7 +761,7 @@ namespace RTC
 		{
 			auto mappedSsrc = consumableRtpEncoding.ssrc;
 
-			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc);
+			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
 		}
 	}
 

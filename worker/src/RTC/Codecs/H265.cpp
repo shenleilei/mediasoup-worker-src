@@ -128,6 +128,8 @@ namespace RTC
 				const uint8_t fuHeader = data[2];
 				const bool start       = (fuHeader & 0x80) != 0;
 				const bool end         = (fuHeader & 0x40) != 0;
+				descriptor.isFragmentStart = start;
+				descriptor.isFragmentEnd   = end;
 				if (start && end)
 				{
 					MS_WARN_DEV("ignoring H265 fragmentation unit with both start and end bits set");
@@ -176,6 +178,7 @@ namespace RTC
 
 			if (frameMarking)
 			{
+				payloadDescriptor->hasFrameMarking = true;
 				payloadDescriptor->s   = frameMarking->start;
 				payloadDescriptor->e   = frameMarking->end;
 				payloadDescriptor->i   = frameMarking->independent;

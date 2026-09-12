@@ -11,6 +11,7 @@
 #include "RTC/RTCP/XrReceiverReferenceTime.hpp"
 #include <absl/container/inlined_vector.h>
 #include <cstring> // std::memcpy()
+#include <string_view>
 
 namespace RTC
 {
@@ -21,6 +22,9 @@ namespace RTC
 	/* Static. */
 
 	static constexpr unsigned int SendNackDelay{ 10u }; // In ms.
+	static constexpr uint64_t KeyFrameCandidateTimeoutMs{ 500u };
+	static constexpr size_t KeyFrameHistoryMaxPackets{ 4096u };
+	static constexpr uint16_t KeyFrameMaxSequenceSpan{ 4096u };
 
 	/* Instance methods. */
 
@@ -207,9 +211,10 @@ namespace RTC
 		// Create a KeyFrameRequestManager.
 		if (this->kind == RTC::Media::Kind::VIDEO)
 		{
-			auto keyFrameRequestDelay = data->keyFrameRequestDelay();
+			this->keyFrameRequestDelay = data->keyFrameRequestDelay();
 
-			this->keyFrameRequestManager = new RTC::KeyFrameRequestManager(this, keyFrameRequestDelay);
+			this->keyFrameRequestManager =
+			  new RTC::KeyFrameRequestManager(this, this->keyFrameRequestDelay);
 		}
 
 		// NOTE: This may throw.
@@ -224,6 +229,9 @@ namespace RTC
 		MS_TRACE();
 
 		this->shared->channelMessageRegistrator->UnregisterHandler(this->id);
+
+		// Stop candidate timers before any listener/manager teardown.
+		ClearKeyFrameCandidates("producer_closed", /*requestRecovery=*/false);
 
 		// Delete all streams.
 		for (auto& kv : this->mapSsrcRtpStream)
@@ -381,6 +389,10 @@ namespace RTC
 					break;
 				}
 
+				// A paused producer does not forward media.  Resume already forces a
+				// fresh key frame, so retain no partial candidate across pause.
+				ClearKeyFrameCandidates("paused", /*requestRecovery=*/false);
+
 				// Pause all streams.
 				for (auto& kv : this->mapSsrcRtpStream)
 				{
@@ -428,11 +440,15 @@ namespace RTC
 					MS_DEBUG_2TAGS(rtcp, rtx, "requesting forced key frame(s) after resumed");
 
 					// Request a key frame for all streams.
+					const uint64_t resumeAtMs = DepLibUV::GetTimeMs();
+
 					for (auto& kv : this->mapSsrcRtpStream)
 					{
 						auto ssrc = kv.first;
 
 						this->keyFrameRequestManager->ForceKeyFrameNeeded(ssrc);
+
+						MarkKeyFrameCadenceBaseline(ssrc, resumeAtMs);
 					}
 				}
 
@@ -635,7 +651,20 @@ namespace RTC
 			MS_ABORT("found stream does not match received packet");
 		}
 
-		if (packet->IsKeyFrame())
+		const uint64_t nowMs = DepLibUV::GetTimeMs();
+
+		// Cadence mode requires an actually received (complete) key frame before
+		// it clears pending requests or refreshes the cadence baseline.  Legacy
+		// mode (delay 0) intentionally keeps the historical first-fragment
+		// behavior.
+		KeyFrameTrackResult keyFrameTrackResult{ KeyFrameTrackResult::IGNORED };
+
+		if (this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager)
+		{
+			RecordKeyFramePacketHistory(packet);
+			keyFrameTrackResult = TrackUpstreamKeyFramePacket(packet, isRtx, nowMs);
+		}
+		else if (packet->IsKeyFrame())
 		{
 			MS_DEBUG_TAG(
 			  rtp,
@@ -648,6 +677,17 @@ namespace RTC
 			{
 				this->keyFrameRequestManager->KeyFrameReceived(packet->GetSsrc());
 			}
+
+			// A received key frame refreshes the cadence baseline.
+			MarkKeyFrameCadenceBaseline(packet->GetSsrc(), nowMs);
+		}
+
+		if (
+			!packet->IsKeyFrame() && !isRtx &&
+			keyFrameTrackResult == KeyFrameTrackResult::IGNORED)
+		{
+			// Lazy key frame cadence watchdog, evaluated at packet cadence.
+			CheckKeyFrameCadence(packet->GetSsrc(), nowMs);
 		}
 
 		// May have to announce a new RTP stream to the listener.
@@ -658,6 +698,8 @@ namespace RTC
 			if (this->keyFrameRequestManager && !this->paused && !packet->IsKeyFrame())
 			{
 				this->keyFrameRequestManager->ForceKeyFrameNeeded(packet->GetSsrc());
+
+				MarkKeyFrameCadenceBaseline(packet->GetSsrc(), nowMs);
 			}
 
 			// Update current packet.
@@ -793,7 +835,7 @@ namespace RTC
 		return true;
 	}
 
-	void Producer::RequestKeyFrame(uint32_t mappedSsrc)
+	void Producer::RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp)
 	{
 		MS_TRACE();
 
@@ -806,6 +848,37 @@ namespace RTC
 			  mappedSsrc,
 			  this->keyFrameRequestManager ? "true" : "false",
 			  this->paused ? "true" : "false");
+			return;
+		}
+
+		// Once the SFU enforces its own key frame cadence (keyFrameRequestDelay
+		// > 0), viewer RTCP PLI/FIR must not drive publisher key frame
+		// generation: many viewers could otherwise keep the publisher
+		// generating back-to-back key frames. The cadence watchdog is then the
+		// only automatic key frame requester. Suppressed requests are counted
+		// and reported (rate-limited) so freeze incidents can prove that
+		// viewers asked and how long the policy held them back.
+		if (fromViewerRtcp && this->keyFrameRequestDelay > 0u)
+		{
+			++this->suppressedViewerKeyFrameRequests;
+
+			const uint64_t nowMs = DepLibUV::GetTimeMs();
+
+			// Rate-limit to one WARN per second per producer: a real viewer
+			// storm stays diagnosable without flooding the log.
+			if (nowMs - this->lastSuppressedViewerRequestLogAtMs >= 1000u)
+			{
+				this->lastSuppressedViewerRequestLogAtMs = nowMs;
+
+				MS_WARN_2TAGS(
+				  rtcp, rtx,
+				  "viewer key frame request suppressed [producerId:%s, mappedSsrc:%" PRIu32
+				  ", suppressedTotal:%" PRIu64 "]",
+				  this->id.c_str(),
+				  mappedSsrc,
+				  this->suppressedViewerKeyFrameRequests);
+			}
+
 			return;
 		}
 
@@ -872,6 +945,447 @@ namespace RTC
 		  mappedSsrc,
 		  ssrc);
 		this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
+	}
+
+	void Producer::MarkKeyFrameCadenceBaseline(uint32_t ssrc, uint64_t nowMs)
+	{
+		this->mapSsrcKeyFrameCadenceAtMs[ssrc] = nowMs;
+	}
+
+	void Producer::MarkKeyFrameRequestSent(uint32_t ssrc, uint64_t nowMs)
+	{
+		this->mapSsrcLastKeyFrameRequestAtMs[ssrc] = nowMs;
+	}
+
+	void Producer::CheckKeyFrameCadence(uint32_t ssrc, uint64_t nowMs)
+	{
+		MS_TRACE();
+
+		// Lazy key frame cadence watchdog: evaluated on every non-key-frame media
+		// packet, so a continuously streaming publisher is checked at packet
+		// cadence without a resident timer (a resident timer would also hang
+		// UV_RUN_DEFAULT based unit tests). This is a best-effort, packet-driven
+		// check: it promises neither a periodic timer nor a decodable key frame;
+		// it only requests one key frame when, while media keeps flowing, no key
+		// frame has been seen for longer than keyFrameRequestDelay.
+		if (this->keyFrameRequestDelay == 0u || this->paused || !this->keyFrameRequestManager)
+		{
+			return;
+		}
+
+		auto it = this->mapSsrcKeyFrameCadenceAtMs.find(ssrc);
+
+		if (it == this->mapSsrcKeyFrameCadenceAtMs.end())
+		{
+			return;
+		}
+
+		const uint64_t sinceLastKeyFrameMs = nowMs - it->second;
+
+		if (sinceLastKeyFrameMs < this->keyFrameRequestDelay)
+		{
+			return;
+		}
+
+		// Enforce a minimum spacing against ANY previously forwarded request
+		// (new stream, resume, coalesced internal request, earlier watchdog
+		// fire, NACK-generator recovery via the manager), not just against
+		// watchdog fires. Without this, an internal request at
+		// t=interval-epsilon would be immediately followed by another watchdog
+		// request.
+		//
+		// Exact guarantee and remaining exceptions:
+		// - Watchdog fires are spaced at least keyFrameRequestDelay from both
+		//   the last key frame and the last forwarded request.
+		// - Exception 1 (emergency, by design): new-stream and resume forced
+		//   requests bypass the spacing.
+		// - Exception 2 (lost-feedback recovery, upstream behavior): the
+		//   manager's pending request performs one bounded retry ~1s after a
+		//   request whose key frame has not arrived, without the spacing check.
+		// Full unification of every path into one scheduler is the next design
+		// packet (change folder T15).
+		auto requestIt = this->mapSsrcLastKeyFrameRequestAtMs.find(ssrc);
+
+		if (requestIt != this->mapSsrcLastKeyFrameRequestAtMs.end())
+		{
+			const uint64_t sinceLastRequestMs = nowMs - requestIt->second;
+
+			if (sinceLastRequestMs < this->keyFrameRequestDelay)
+			{
+				return;
+			}
+		}
+
+		// Refresh the baseline before requesting so a packet burst while waiting
+		// for the publisher's key frame triggers exactly one request per interval.
+		MarkKeyFrameCadenceBaseline(ssrc, nowMs);
+
+		MS_DEBUG_2TAGS(
+		  rtp, rtcp,
+		  "key frame cadence watchdog requesting key frame [ssrc:%" PRIu32
+		  ", intervalMs:%" PRIu32 ", sinceLastKeyFrameMs:%" PRIu64
+		  ", suppressedViewerRequests:%" PRIu64 "]",
+		  ssrc,
+		  this->keyFrameRequestDelay,
+		  sinceLastKeyFrameMs,
+		  this->suppressedViewerKeyFrameRequests);
+
+		this->keyFrameRequestManager->ForceKeyFrameNeeded(ssrc);
+	}
+
+	Producer::KeyFrameTrackResult Producer::TrackUpstreamKeyFramePacket(
+	  RTC::RtpPacket* packet, bool isRtx, uint64_t nowMs)
+	{
+		MS_TRACE();
+
+		const uint32_t ssrc = packet->GetSsrc();
+		auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+		const bool credibleFrameStart = packet->IsKeyFrame() && packet->IsFrameStart();
+
+		if (credibleFrameStart)
+		{
+			if (it != this->mapSsrcKeyFrameCandidates.end())
+			{
+				auto* candidate = it->second;
+
+				// A later key-frame start supersedes an unfinished candidate.
+				// Another key-frame-marked packet with the SAME timestamp is a
+				// subsequent slice/fragment, not a new frame head.
+				if (candidate->timestamp != packet->GetTimestamp())
+				{
+					FinalizeKeyFrameCandidate(
+					  ssrc, candidate, "superseded", /*complete=*/false, /*requestRecovery=*/true, nowMs);
+					it = this->mapSsrcKeyFrameCandidates.end();
+				}
+			}
+
+			if (it == this->mapSsrcKeyFrameCandidates.end())
+			{
+				StartKeyFrameCandidate(packet, nowMs);
+				it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			}
+		}
+
+		if (it == this->mapSsrcKeyFrameCandidates.end())
+		{
+			return KeyFrameTrackResult::IGNORED;
+		}
+
+		auto* candidate = it->second;
+
+		// A newer timestamp means the old frame is over.  If its credible end or
+		// any packet was missing, it cannot be claimed complete.
+		if (packet->GetTimestamp() != candidate->timestamp)
+		{
+			if (RTC::SeqManager<uint32_t>::IsSeqHigherThan(packet->GetTimestamp(), candidate->timestamp))
+			{
+				FinalizeKeyFrameCandidate(
+				  ssrc, candidate, "new_frame", /*complete=*/false, /*requestRecovery=*/true, nowMs);
+				return KeyFrameTrackResult::FINALIZED;
+			}
+
+			// Old RTX/misordered traffic for another timestamp is irrelevant.
+			return KeyFrameTrackResult::ACTIVE;
+		}
+
+		const bool newlyInserted = candidate->receivedSeqs.insert(packet->GetSequenceNumber()).second;
+		if (newlyInserted && isRtx)
+		{
+			++candidate->repairedPackets;
+		}
+
+		if (packet->HasMarker())
+		{
+			candidate->markerSeen = true;
+			candidate->markerSeq  = packet->GetSequenceNumber();
+		}
+
+		if (packet->IsFrameEnd(packet->HasMarker()))
+		{
+			candidate->hasEnd = true;
+			candidate->endSeq = packet->GetSequenceNumber();
+		}
+
+		if (KeyFrameCandidateIsComplete(*candidate))
+		{
+			FinalizeKeyFrameCandidate(
+			  ssrc, candidate, "complete", /*complete=*/true, /*requestRecovery=*/false, nowMs);
+			return KeyFrameTrackResult::FINALIZED;
+		}
+
+		return KeyFrameTrackResult::ACTIVE;
+	}
+
+	void Producer::StartKeyFrameCandidate(RTC::RtpPacket* packet, uint64_t nowMs)
+	{
+		MS_TRACE();
+
+		const uint32_t ssrc = packet->GetSsrc();
+		auto* candidate = new KeyFrameCandidate();
+		candidate->timestamp   = packet->GetTimestamp();
+		candidate->startSeq    = packet->GetSequenceNumber();
+		candidate->startedAtMs = nowMs;
+		candidate->timer       = new TimerHandle(this);
+		candidate->timer->Start(KeyFrameCandidateTimeoutMs);
+
+		// Recover same-timestamp packets that arrived before the credible frame
+		// start (misorder or an RTX whose original start packet arrives later).
+		auto historyIt = this->mapSsrcKeyFramePacketHistory.find(ssrc);
+		if (historyIt != this->mapSsrcKeyFramePacketHistory.end())
+		{
+			for (const auto& kv : historyIt->second.packets)
+			{
+				if (kv.second.timestamp != candidate->timestamp ||
+				    RTC::SeqManager<uint16_t>::IsSeqLowerThan(kv.first, candidate->startSeq))
+				{
+					continue;
+				}
+
+				candidate->receivedSeqs.insert(kv.first);
+				if (kv.second.frameEnd)
+				{
+					candidate->hasEnd = true;
+					candidate->endSeq = kv.first;
+				}
+				if (kv.second.marker)
+				{
+					candidate->markerSeen = true;
+					candidate->markerSeq = kv.first;
+				}
+			}
+		}
+
+		this->mapSsrcKeyFrameCandidates[ssrc] = candidate;
+
+		MS_DEBUG_TAG(
+		  rtp,
+		  "upstream key frame candidate started [ssrc:%" PRIu32
+		  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", timeoutMs:%" PRIu64 "]",
+		  ssrc,
+		  candidate->timestamp,
+		  candidate->startSeq,
+		  KeyFrameCandidateTimeoutMs);
+	}
+
+	void Producer::FinalizeKeyFrameCandidate(
+	  uint32_t ssrc,
+	  KeyFrameCandidate* candidate,
+	  const char* reason,
+	  bool complete,
+	  bool requestRecovery,
+	  uint64_t nowMs)
+	{
+		MS_TRACE();
+
+		const uint32_t timestamp = candidate->timestamp;
+		const uint16_t startSeq = candidate->startSeq;
+		const uint16_t endSeq = candidate->hasEnd ? candidate->endSeq : candidate->startSeq;
+		const bool hasEnd = candidate->hasEnd;
+		const size_t missingPackets = hasEnd ? CountMissingKeyFramePackets(*candidate) : 0u;
+		const size_t repairedPackets = candidate->repairedPackets;
+		const uint64_t waitedMs = nowMs - candidate->startedAtMs;
+
+		candidate->timer->Stop();
+		delete candidate->timer;
+		candidate->timer = nullptr;
+		this->mapSsrcKeyFrameCandidates.erase(ssrc);
+		delete candidate;
+
+		if (complete)
+		{
+			++this->mapSsrcCompleteKeyFrames[ssrc];
+
+			// Only a complete key frame clears a pending request and refreshes
+			// the cadence baseline.
+			this->keyFrameRequestManager->KeyFrameReceived(ssrc);
+			MarkKeyFrameCadenceBaseline(ssrc, nowMs);
+
+			MS_DEBUG_TAG(
+			  rtp,
+			  "upstream key frame complete [ssrc:%" PRIu32
+			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
+			  ", repairedPackets:%zu, waitedMs:%" PRIu64 "]",
+			  ssrc,
+			  timestamp,
+			  startSeq,
+			  endSeq,
+			  repairedPackets,
+			  waitedMs);
+			// Intentionally no request: recovery is complete.
+			(void)requestRecovery;
+
+			return;
+		}
+
+		++this->mapSsrcIncompleteKeyFrames[ssrc];
+
+		if (std::string_view(reason) == "timeout")
+		{
+			MS_WARN_2TAGS(
+			  rtp, rtcp,
+			  "upstream key frame incomplete [ssrc:%" PRIu32
+			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
+			  ", hasEnd:%s, missingPackets:%zu, repairedPackets:%zu, waitedMs:%" PRIu64
+			  ", reason:%s]",
+			  ssrc,
+			  timestamp,
+			  startSeq,
+			  endSeq,
+			  hasEnd ? "true" : "false",
+			  missingPackets,
+			  repairedPackets,
+			  waitedMs,
+			  reason);
+		}
+		else
+		{
+			MS_DEBUG_2TAGS(
+			  rtp, rtcp,
+			  "upstream key frame incomplete [ssrc:%" PRIu32
+			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
+			  ", hasEnd:%s, missingPackets:%zu, repairedPackets:%zu, waitedMs:%" PRIu64
+			  ", reason:%s]",
+			  ssrc,
+			  timestamp,
+			  startSeq,
+			  endSeq,
+			  hasEnd ? "true" : "false",
+			  missingPackets,
+			  repairedPackets,
+			  waitedMs,
+			  reason);
+		}
+
+		if (requestRecovery)
+		{
+			this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
+		}
+	}
+
+	bool Producer::KeyFrameCandidateIsComplete(const KeyFrameCandidate& candidate) const
+	{
+		if (!candidate.hasEnd)
+		{
+			return false;
+		}
+
+		// A marker on another packet contradicts the codec-parsed end.  This can
+		// happen with layer/frame-marking mismatches; treat it as unknown.
+		if (candidate.markerSeen && candidate.markerSeq != candidate.endSeq)
+		{
+			return false;
+		}
+
+		const uint16_t span = static_cast<uint16_t>(candidate.endSeq - candidate.startSeq);
+		if (span > KeyFrameMaxSequenceSpan)
+		{
+			return false;
+		}
+
+		for (uint16_t seq = candidate.startSeq; seq != candidate.endSeq; ++seq)
+		{
+			if (candidate.receivedSeqs.count(seq) == 0u)
+			{
+				return false;
+			}
+		}
+
+		return candidate.receivedSeqs.count(candidate.endSeq) != 0u;
+	}
+
+	size_t Producer::CountMissingKeyFramePackets(const KeyFrameCandidate& candidate) const
+	{
+		if (!candidate.hasEnd)
+		{
+			return 0u;
+		}
+
+		const uint16_t span = static_cast<uint16_t>(candidate.endSeq - candidate.startSeq);
+		if (span > KeyFrameMaxSequenceSpan)
+		{
+			return static_cast<size_t>(span) + 1u;
+		}
+
+		size_t missing{ 0u };
+		for (uint16_t seq = candidate.startSeq; seq != candidate.endSeq; ++seq)
+		{
+			if (candidate.receivedSeqs.count(seq) == 0u)
+			{
+				++missing;
+			}
+		}
+		if (candidate.receivedSeqs.count(candidate.endSeq) == 0u)
+		{
+			++missing;
+		}
+
+		return missing;
+	}
+
+	void Producer::RecordKeyFramePacketHistory(RTC::RtpPacket* packet)
+	{
+		MS_TRACE();
+
+		auto& history = this->mapSsrcKeyFramePacketHistory[packet->GetSsrc()];
+		KeyFrameHistoryPacket historyPacket;
+		historyPacket.timestamp = packet->GetTimestamp();
+		historyPacket.frameEnd  = packet->IsFrameEnd(packet->HasMarker());
+		historyPacket.marker    = packet->HasMarker();
+		history.packets[packet->GetSequenceNumber()] = historyPacket;
+
+		if (!history.started || RTC::SeqManager<uint16_t>::IsSeqHigherThan(packet->GetSequenceNumber(), history.newestSeq))
+		{
+			history.started  = true;
+			history.newestSeq = packet->GetSequenceNumber();
+		}
+
+		if (history.packets.size() <= KeyFrameHistoryMaxPackets)
+		{
+			return;
+		}
+
+		const uint16_t cutoff = static_cast<uint16_t>(history.newestSeq - (KeyFrameHistoryMaxPackets / 2u));
+		std::vector<uint16_t> staleSeqs;
+		for (const auto& kv : history.packets)
+		{
+			if (RTC::SeqManager<uint16_t>::IsSeqLowerThan(kv.first, cutoff))
+			{
+				staleSeqs.push_back(kv.first);
+			}
+		}
+		for (auto seq : staleSeqs)
+		{
+			history.packets.erase(seq);
+		}
+	}
+
+	void Producer::ClearKeyFrameCandidate(
+	  uint32_t ssrc, const char* reason, bool requestRecovery)
+	{
+		MS_TRACE();
+
+		auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+		if (it == this->mapSsrcKeyFrameCandidates.end())
+		{
+			return;
+		}
+
+		FinalizeKeyFrameCandidate(
+		  ssrc, it->second, reason, /*complete=*/false, requestRecovery, DepLibUV::GetTimeMs());
+	}
+
+	void Producer::ClearKeyFrameCandidates(const char* reason, bool requestRecovery)
+	{
+		MS_TRACE();
+
+		// Finalize one at a time: FinalizeKeyFrameCandidate() erases from the map.
+		while (!this->mapSsrcKeyFrameCandidates.empty())
+		{
+			auto it = this->mapSsrcKeyFrameCandidates.begin();
+			const uint32_t ssrc = it->first;
+
+			ClearKeyFrameCandidate(ssrc, reason, requestRecovery);
+		}
 	}
 
 	RTC::RtpStreamRecv* Producer::GetRtpStream(RTC::RtpPacket* packet)
@@ -1196,6 +1710,13 @@ namespace RTC
 		this->mapSsrcRtpStream[ssrc]              = rtpStream;
 		this->rtpStreamByEncodingIdx[encodingIdx] = rtpStream;
 		this->rtpStreamScores[encodingIdx]        = rtpStream->GetScore();
+
+		// A stream rebuild invalidates receipt evidence from the old generation.
+		ClearKeyFrameCandidate(ssrc, "stream_rebuilt", /*requestRecovery=*/false);
+		this->mapSsrcKeyFramePacketHistory.erase(ssrc);
+
+		// Start the key frame cadence baseline for the new stream.
+		MarkKeyFrameCadenceBaseline(ssrc, DepLibUV::GetTimeMs());
 
 		// Set the mapped SSRC.
 		this->mapRtpStreamMappedSsrc[rtpStream]             = encodingMapping.mappedSsrc;
@@ -1837,6 +2358,53 @@ namespace RTC
 		  rtpActivityStateVersion);
 	}
 
+	void Producer::OnTimer(TimerHandle* timer)
+	{
+		MS_TRACE();
+
+		for (auto& kv : this->mapSsrcKeyFrameCandidates)
+		{
+			if (kv.second->timer != timer)
+			{
+				continue;
+			}
+
+			FinalizeKeyFrameCandidate(
+			  kv.first,
+			  kv.second,
+			  "timeout",
+			  /*complete=*/false,
+			  /*requestRecovery=*/true,
+			  DepLibUV::GetTimeMs());
+			return;
+		}
+	}
+
+	void Producer::OnRtpStreamKeyFrameRequired(RTC::RtpStreamRecv* rtpStream)
+	{
+		MS_TRACE();
+
+		// NACK-generator overflow means sustained unrecoverable uplink loss.
+		// In cadence mode the request must go through the manager so pending
+		// dedup, the coalescing window and the request-spacing bookkeeping
+		// apply; an already in-flight request then covers this need instead of
+		// producing another uncoordinated RTCP feedback. This also holds while
+		// the producer is paused: the request serves receive-stream recovery
+		// (upstream behavior always sent it), and the manager coordinates it;
+		// the consumer-facing key frame on resume is handled separately by the
+		// forced request in the resume path.
+		// Legacy mode (delay 0, or a video producer without a manager) keeps
+		// the previous behavior: forward the key frame request directly.
+		if (this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager)
+		{
+			this->keyFrameRequestManager->KeyFrameNeeded(rtpStream->GetSsrc());
+
+			return;
+		}
+
+		rtpStream->RequestKeyFrame();
+	}
+
 	inline void Producer::OnKeyFrameNeeded(
 	  RTC::KeyFrameRequestManager* /*keyFrameRequestManager*/, uint32_t ssrc)
 	{
@@ -1852,6 +2420,12 @@ namespace RTC
 		}
 
 		auto* rtpStream = it->second;
+
+		// Every forwarded request (new stream, resume, coalesced internal
+		// request, watchdog fire) passes here: record it so the cadence
+		// watchdog enforces a minimum spacing against any prior request, not
+		// just against its own fires.
+		MarkKeyFrameRequestSent(ssrc, DepLibUV::GetTimeMs());
 
 		rtpStream->RequestKeyFrame();
 	}

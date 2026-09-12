@@ -734,6 +734,16 @@ namespace RTC
 			return this->payloadDescriptorHandler->IsKeyFrame();
 		}
 
+		bool IsFrameStart() const
+		{
+			return this->payloadDescriptorHandler && this->payloadDescriptorHandler->IsFrameStart();
+		}
+
+		bool IsFrameEnd(bool rtpMarker) const
+		{
+			return this->payloadDescriptorHandler && this->payloadDescriptorHandler->IsFrameEnd(rtpMarker);
+		}
+
 		RtpPacket* Clone() const;
 
 		bool RtxEncode(uint8_t payloadType, uint32_t ssrc, uint16_t seq);

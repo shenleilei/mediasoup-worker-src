@@ -12,6 +12,7 @@
 #include "RTC/Router.hpp"
 #include "RTC/RtpStreamRecv.hpp"
 #include "RTC/Shared.hpp"
+#include "RTC/RTCP/FeedbackPsPli.hpp"
 #include "RTC/SimpleConsumer.hpp"
 #include "RTC/SimulcastConsumer.hpp"
 #include "RTC/SvcConsumer.hpp"
@@ -408,9 +409,15 @@ namespace
 			this->retransmittedPackets.emplace_back(CapturePacket(packet, this->extensionProfile));
 		}
 
-		void OnConsumerKeyFrameRequested(RTC::Consumer* /*consumer*/, uint32_t /*mappedSsrc*/) override
+		void OnConsumerKeyFrameRequested(
+		  RTC::Consumer* /*consumer*/, uint32_t /*mappedSsrc*/, bool fromViewerRtcp) override
 		{
 			++this->keyFrameRequests;
+
+			if (fromViewerRtcp)
+			{
+				++this->viewerKeyFrameRequests;
+			}
 		}
 
 		void OnConsumerNeedBitrateChange(RTC::Consumer* /*consumer*/) override
@@ -432,6 +439,7 @@ namespace
 		std::vector<PacketSnapshot> sentPackets;
 		std::vector<PacketSnapshot> retransmittedPackets;
 		size_t keyFrameRequests{ 0u };
+		size_t viewerKeyFrameRequests{ 0u };
 		bool throwOnSend{ false };
 	};
 
@@ -563,6 +571,10 @@ namespace
 	{
 	public:
 		void OnRtpStreamScore(RTC::RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+		}
+
+		void OnRtpStreamKeyFrameRequired(RTC::RtpStreamRecv* /*rtpStream*/) override
 		{
 		}
 
@@ -883,6 +895,41 @@ namespace
 		consumer.ProducerRtpStream(&producerStream, ProducerSsrc);
 	}
 } // namespace
+
+TEST_CASE(
+  "SimpleConsumer marks RTCP key frame requests as viewer originated",
+  "[consumer][rtcp][keyframe]")
+{
+	ChannelMessageRegistrator* registrator = new ChannelMessageRegistrator();
+	RTC::Shared shared(registrator, nullptr);
+	TestConsumerListener consumerListener(H264Fixture);
+
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildConsumeRequest(builder, H264Fixture);
+	RTC::SimpleConsumer consumer(
+	  &shared, "consumer-viewer-pli", "producer-viewer-pli", &consumerListener, request);
+
+	TestRtpStreamRecvListener rtpStreamRecvListener;
+	RTC::RtpStream::Params producerParams;
+	producerParams.ssrc        = ProducerSsrc;
+	producerParams.payloadType = PayloadType;
+	producerParams.clockRate   = 90000u;
+	producerParams.mimeType.SetMimeType(H264Fixture.mimeType);
+	RTC::RtpStreamRecv producerStream(
+	  &rtpStreamRecvListener,
+	  producerParams,
+	  /*sendNackDelayMs*/ 0u,
+	  /*useRtpInactivityCheck*/ false);
+
+	SetupActiveSyncConsumer(consumer, producerStream);
+
+	RTC::RTCP::FeedbackPsPliPacket pli(ConsumerSsrc, ConsumerSsrc);
+
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+
+	REQUIRE(consumerListener.keyFrameRequests == 1u);
+	CHECK(consumerListener.viewerKeyFrameRequests == 1u);
+}
 
 SCENARIO("SimpleConsumer forwards H265 parameter sets while waiting for sync", "[consumer][h265]")
 {

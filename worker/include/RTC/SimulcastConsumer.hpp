@@ -87,11 +87,11 @@ namespace RTC
 		void UserOnTransportDisconnected() override;
 		void UserOnPaused() override;
 		void UserOnResumed() override;
-		void RequestKeyFrame() override;
+		void RequestKeyFrame(bool fromViewerRtcp = false) override;
 		void CreateRtpStream();
-		void RequestKeyFrames();
+		void RequestKeyFrames(bool fromViewerRtcp = false);
 		void RequestKeyFrameForTargetSpatialLayer();
-		void RequestKeyFrameForCurrentSpatialLayer();
+		void RequestKeyFrameForCurrentSpatialLayer(bool fromViewerRtcp = false);
 		void MayChangeLayers(bool force = false);
 		bool RecalculateTargetLayers(int16_t& newTargetSpatialLayer, int16_t& newTargetTemporalLayer) const;
 		void UpdateTargetLayers(int16_t newTargetSpatialLayer, int16_t newTargetTemporalLayer);

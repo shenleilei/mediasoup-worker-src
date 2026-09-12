@@ -14,13 +14,16 @@
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpStreamRecv.hpp"
 #include "RTC/Shared.hpp"
+#include "handles/TimerHandle.hpp"
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace RTC
 {
 	class Producer : public RTC::RtpStreamRecv::Listener,
 	                 public RTC::KeyFrameRequestManager::Listener,
+	                 public TimerHandle::Listener,
 	                 public Channel::ChannelSocket::RequestHandler,
 	                 public Channel::ChannelSocket::NotificationHandler
 	{
@@ -71,6 +74,48 @@ namespace RTC
 			bool camera{ false };
 			bool flip{ false };
 			uint16_t rotation{ 0 };
+		};
+
+		// Bounded uplink key-frame receipt evidence.  A candidate starts only at
+		// a codec-parsed frame start; it is complete only when a codec-parsed
+		// (and, where needed, marker-corroborated) frame end is seen and every
+		// sequence number in the start..end interval has been received.
+		struct KeyFrameCandidate
+		{
+			uint32_t timestamp{ 0u };
+			uint16_t startSeq{ 0u };
+			uint16_t endSeq{ 0u };
+			uint64_t startedAtMs{ 0u };
+			bool hasEnd{ false };
+			bool markerSeen{ false };
+			uint16_t markerSeq{ 0u };
+			size_t repairedPackets{ 0u };
+			std::unordered_set<uint16_t> receivedSeqs;
+			TimerHandle* timer{ nullptr };
+		};
+
+		// Keeps a short packet/timestamp history so a frame-start packet that
+		// arrives out of order can still recover earlier packets from the same
+		// RTP timestamp.
+		struct KeyFrameHistoryPacket
+		{
+			uint32_t timestamp{ 0u };
+			bool frameEnd{ false };
+			bool marker{ false };
+		};
+
+		struct KeyFramePacketHistory
+		{
+			absl::flat_hash_map<uint16_t, KeyFrameHistoryPacket> packets;
+			uint16_t newestSeq{ 0u };
+			bool started{ false };
+		};
+
+		enum class KeyFrameTrackResult
+		{
+			IGNORED = 0,
+			ACTIVE,
+			FINALIZED
 		};
 
 	public:
@@ -164,7 +209,39 @@ namespace RTC
 		void ReceiveRtcpSenderReport(RTC::RTCP::SenderReport* report);
 		void ReceiveRtcpXrDelaySinceLastRr(RTC::RTCP::DelaySinceLastRr::SsrcInfo* ssrcInfo);
 		bool GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs);
-		void RequestKeyFrame(uint32_t mappedSsrc);
+		void RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp);
+
+#ifdef MS_TEST
+		bool testHasKeyFrameCandidate(uint32_t ssrc) const
+		{
+			return this->mapSsrcKeyFrameCandidates.contains(ssrc);
+		}
+		uint64_t testCompleteKeyFrameCount(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcCompleteKeyFrames.find(ssrc);
+			return it == this->mapSsrcCompleteKeyFrames.end() ? 0u : it->second;
+		}
+		uint64_t testIncompleteKeyFrameCount(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcIncompleteKeyFrames.find(ssrc);
+			return it == this->mapSsrcIncompleteKeyFrames.end() ? 0u : it->second;
+		}
+		size_t testKeyFrameCandidateReceivedPackets(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			return it == this->mapSsrcKeyFrameCandidates.end() ? 0u : it->second->receivedSeqs.size();
+		}
+		bool testKeyFrameCandidateHasEnd(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			return it != this->mapSsrcKeyFrameCandidates.end() && it->second->hasEnd;
+		}
+		uint16_t testKeyFrameCandidateEndSeq(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcKeyFrameCandidates.find(ssrc);
+			return it == this->mapSsrcKeyFrameCandidates.end() ? 0u : it->second->endSeq;
+		}
+#endif
 
 		/* Methods inherited from Channel::ChannelSocket::RequestHandler. */
 	public:
@@ -197,6 +274,29 @@ namespace RTC
 		void EmitTraceEventFirType(uint32_t ssrc) const;
 		void EmitTraceEventNackType() const;
 		void EmitTraceEventSrType(RTC::RTCP::SenderReport* report) const;
+		// Key frame cadence (see CheckKeyFrameCadence): per-SSRC baseline of the
+		// last key frame seen (or the last cadence-triggered request).
+		void MarkKeyFrameCadenceBaseline(uint32_t ssrc, uint64_t nowMs);
+		// Records when a key frame request was last handed to the publisher
+		// stream. The watchdog uses this to enforce a minimum spacing between
+		// ANY two forwarded requests, not just its own fires.
+		void MarkKeyFrameRequestSent(uint32_t ssrc, uint64_t nowMs);
+		void CheckKeyFrameCadence(uint32_t ssrc, uint64_t nowMs);
+		KeyFrameTrackResult TrackUpstreamKeyFramePacket(
+		  RTC::RtpPacket* packet, bool isRtx, uint64_t nowMs);
+		void StartKeyFrameCandidate(RTC::RtpPacket* packet, uint64_t nowMs);
+		void FinalizeKeyFrameCandidate(
+		  uint32_t ssrc,
+		  KeyFrameCandidate* candidate,
+		  const char* reason,
+		  bool complete,
+		  bool requestRecovery,
+		  uint64_t nowMs);
+		bool KeyFrameCandidateIsComplete(const KeyFrameCandidate& candidate) const;
+		size_t CountMissingKeyFramePackets(const KeyFrameCandidate& candidate) const;
+		void RecordKeyFramePacketHistory(RTC::RtpPacket* packet);
+		void ClearKeyFrameCandidate(uint32_t ssrc, const char* reason, bool requestRecovery);
+		void ClearKeyFrameCandidates(const char* reason, bool requestRecovery);
 		void EmitTraceEvent(flatbuffers::Offset<FBS::Producer::TraceNotification>& notification) const;
 
 		/* Pure virtual methods inherited from RTC::RtpStreamRecv::Listener. */
@@ -213,6 +313,11 @@ namespace RTC
 		  uint64_t lastRtpActivityAtMs,
 		  uint32_t rtpActivityThresholdMs,
 		  uint64_t rtpActivityStateVersion) override;
+		void OnRtpStreamKeyFrameRequired(RTC::RtpStreamRecv* rtpStream) override;
+
+		/* Pure virtual methods inherited from TimerHandle::Listener. */
+	public:
+		void OnTimer(TimerHandle* timer) override;
 
 		/* Pure virtual methods inherited from RTC::KeyFrameRequestManager::Listener. */
 	public:
@@ -229,6 +334,20 @@ namespace RTC
 		// Allocated by this.
 		absl::flat_hash_map<uint32_t, RTC::RtpStreamRecv*> mapSsrcRtpStream;
 		RTC::KeyFrameRequestManager* keyFrameRequestManager{ nullptr };
+		// 0 means legacy behavior: no viewer-request suppression, no cadence
+		// watchdog, and no request coalescing window.
+		uint32_t keyFrameRequestDelay{ 0u };
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcKeyFrameCadenceAtMs;
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameRequestAtMs;
+		absl::flat_hash_map<uint32_t, KeyFrameCandidate*> mapSsrcKeyFrameCandidates;
+		absl::flat_hash_map<uint32_t, KeyFramePacketHistory> mapSsrcKeyFramePacketHistory;
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcCompleteKeyFrames;
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcIncompleteKeyFrames;
+		// Viewer-request suppression diagnostics: cumulative count plus a
+		// rate-limited WARN so freeze incidents can prove "viewers asked, the
+		// cadence policy held them back" without flooding the log.
+		uint64_t suppressedViewerKeyFrameRequests{ 0u };
+		uint64_t lastSuppressedViewerRequestLogAtMs{ 0u };
 		// Others.
 		RTC::Media::Kind kind;
 		RTC::RtpParameters rtpParameters;

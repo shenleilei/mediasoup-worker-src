@@ -77,6 +77,10 @@ SCENARIO("XR RTT updates instant score without waiting for SR", "[rtp][rtpstream
 		{
 		}
 
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
+		{
+		}
+
 		void OnRtpStreamNeedWorstRemoteFractionLost(
 		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
 		{
@@ -160,6 +164,10 @@ SCENARIO("loss-only instant score drop notifies without legacy score change", "[
 		}
 
 		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
 		{
 		}
 
@@ -363,10 +371,16 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 		{
 		}
 
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
+		{
+			this->keyFrameRequired = true;
+		}
+
 	public:
 		bool shouldTriggerNack = false;
 		bool shouldTriggerPLI  = false;
 		bool shouldTriggerFIR  = false;
+		bool keyFrameRequired  = false;
 		std::vector<uint16_t> nackedSeqNumbers;
 	};
 
@@ -460,12 +474,16 @@ SCENARIO("receive RTP packets and trigger NACK", "[rtp][rtpstream]")
 		packet->SetSequenceNumber(1);
 		rtpStream.ReceivePacket(packet);
 
-		// Seq different is bigger than MaxNackPackets in NackGenerator, so it
-		// triggers a key frame.
+		// Seq different is bigger than MaxNackPackets in NackGenerator, so the
+		// NACK generator gives up and reports that a key frame is required.
+		// Since the scheduling change the stream notifies its listener instead
+		// of emitting RTCP PLI on its own; the listener (the Producer in
+		// production) decides how to forward the request.
 		packet->SetSequenceNumber(1003);
-		listener.shouldTriggerPLI = true;
+		listener.shouldTriggerPLI = false;
 		listener.shouldTriggerFIR = false;
 		rtpStream.ReceivePacket(packet);
+		REQUIRE(listener.keyFrameRequired == true);
 		REQUIRE(rtpStream.GetNewlyMissingPackets() == 1001u);
 		REQUIRE(rtpStream.GetUnrecoveredPackets() == 1001u);
 	}
@@ -486,6 +504,10 @@ SCENARIO("receive RTP packet with abs-capture-time and expose it in stats", "[rt
 		}
 
 		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
 		{
 		}
 
@@ -623,6 +645,10 @@ SCENARIO("receive RTP stats cover normal video, no RTCP and DTX inactivity", "[r
 		}
 
 		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
 		{
 		}
 
@@ -766,6 +792,10 @@ SCENARIO("RTP sequence restart clears interval windows without rewriting cumulat
 		{
 		}
 
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
+		{
+		}
+
 		void OnRtpStreamNeedWorstRemoteFractionLost(
 		  RTC::RtpStreamRecv* /*rtpStream*/, uint8_t& /*worstRemoteFractionLost*/) override
 		{
@@ -878,6 +908,10 @@ SCENARIO("RTP inactivity timer keeps the last-packet deadline without per-packet
 		}
 
 		void OnRtpStreamSendRtcpPacket(RtpStreamRecv* /*rtpStream*/, RTCP::Packet* /*packet*/) override
+		{
+		}
+
+		void OnRtpStreamKeyFrameRequired(RtpStreamRecv* /*rtpStream*/) override
 		{
 		}
 

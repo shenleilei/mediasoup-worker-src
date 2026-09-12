@@ -34,6 +34,9 @@ namespace RTC
 				bool hasVps{ false };
 				bool hasSps{ false };
 				bool hasPps{ false };
+				bool hasFrameMarking{ false };
+				bool isFragmentStart{ false };
+				bool isFragmentEnd{ false };
 			};
 
 		public:
@@ -85,6 +88,22 @@ namespace RTC
 				bool IsKeyFrame() const override
 				{
 					return this->payloadDescriptor->isKeyFrame;
+				}
+				bool IsFrameStart() const override
+				{
+					return this->payloadDescriptor->hasFrameMarking
+					         ? this->payloadDescriptor->s != 0
+					         : this->payloadDescriptor->isFragmentStart;
+				}
+				bool IsFrameEnd(bool rtpMarker) const override
+				{
+					if (this->payloadDescriptor->hasFrameMarking)
+					{
+						return this->payloadDescriptor->e != 0;
+					}
+					// FU boundaries are NAL boundaries.  Corroborate the final
+					// fragment with the RTP marker before claiming a frame end.
+					return this->payloadDescriptor->isFragmentEnd && rtpMarker;
 				}
 
 			private:

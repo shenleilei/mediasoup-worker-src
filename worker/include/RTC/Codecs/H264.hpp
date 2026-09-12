@@ -34,6 +34,9 @@ namespace RTC
 				bool hasTid{ false };
 				bool hasTl0picidx{ false };
 				bool isKeyFrame{ false };
+				bool hasFrameMarking{ false };
+				bool isFragmentStart{ false };
+				bool isFragmentEnd{ false };
 			};
 
 		public:
@@ -86,6 +89,22 @@ namespace RTC
 				bool IsKeyFrame() const override
 				{
 					return this->payloadDescriptor->isKeyFrame;
+				}
+				bool IsFrameStart() const override
+				{
+					return this->payloadDescriptor->hasFrameMarking
+					         ? this->payloadDescriptor->s != 0
+					         : this->payloadDescriptor->isFragmentStart;
+				}
+				bool IsFrameEnd(bool rtpMarker) const override
+				{
+					if (this->payloadDescriptor->hasFrameMarking)
+					{
+						return this->payloadDescriptor->e != 0;
+					}
+					// FU start/end bits describe a NAL, not necessarily a whole
+					// frame.  Require the RTP marker to corroborate the final FU.
+					return this->payloadDescriptor->isFragmentEnd && rtpMarker;
 				}
 
 			private:

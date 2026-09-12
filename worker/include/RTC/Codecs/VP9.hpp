@@ -142,6 +142,14 @@ namespace RTC
 				{
 					return this->payloadDescriptor->isKeyFrame;
 				}
+				bool IsFrameStart() const override
+				{
+					return this->payloadDescriptor->b != 0;
+				}
+				bool IsFrameEnd(bool /*rtpMarker*/) const override
+				{
+					return this->payloadDescriptor->e != 0;
+				}
 
 			private:
 				std::unique_ptr<PayloadDescriptor> payloadDescriptor;

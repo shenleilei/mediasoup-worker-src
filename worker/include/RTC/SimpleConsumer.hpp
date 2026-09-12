@@ -72,7 +72,7 @@ namespace RTC
 		void UserOnPaused() override;
 		void UserOnResumed() override;
 		void CreateRtpStream();
-		void RequestKeyFrame() override;
+		void RequestKeyFrame(bool fromViewerRtcp = false) override;
 		void EmitScore() const;
 
 		/* Pure virtual methods inherited from RtpStreamSend::Listener. */

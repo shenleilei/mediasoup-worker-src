@@ -108,6 +108,18 @@ namespace RTC
 			virtual uint8_t GetSpatialLayer() const                                                  = 0;
 			virtual uint8_t GetTemporalLayer() const                                                 = 0;
 			virtual bool IsKeyFrame() const                                                          = 0;
+			// Codec-parsed frame boundary information.  A key-frame candidate may
+			// only start at IsFrameStart(); IsFrameEnd() must be corroborated by
+			// the RTP marker when the codec itself does not provide a reliable
+			// frame-end bit.
+			virtual bool IsFrameStart() const
+			{
+				return false;
+			}
+			virtual bool IsFrameEnd(bool /*rtpMarker*/) const
+			{
+				return false;
+			}
 		};
 	} // namespace Codecs
 } // namespace RTC

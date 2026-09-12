@@ -21,6 +21,11 @@ namespace RTC
 		public:
 			virtual void OnRtpStreamSendRtcpPacket(
 			  RTC::RtpStreamRecv* rtpStream, RTC::RTCP::Packet* packet) = 0;
+			// Fired when the receive stream itself needs a key frame (e.g. the
+			// NACK generator gave up on unrecoverable uplink loss). The listener
+			// decides how to schedule the request instead of the stream sending
+			// RTCP feedback on its own.
+			virtual void OnRtpStreamKeyFrameRequired(RTC::RtpStreamRecv* rtpStream) = 0;
 			virtual void OnRtpStreamNeedWorstRemoteFractionLost(
 			  RTC::RtpStreamRecv* rtpStream, uint8_t& worstRemoteFractionLost) = 0;
 			virtual void OnRtpStreamRtpActivityTransition(

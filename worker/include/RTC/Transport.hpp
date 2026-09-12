@@ -96,7 +96,7 @@ namespace RTC
 			virtual void OnTransportDataProducerResumed(
 			  RTC::Transport* transport, RTC::DataProducer* dataProducer) = 0;
 			virtual void OnTransportConsumerKeyFrameRequested(
-			  RTC::Transport* transport, RTC::Consumer* consumer, uint32_t mappedSsrc) = 0;
+			  RTC::Transport* transport, RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp) = 0;
 			virtual void OnTransportNewDataProducer(
 			  RTC::Transport* transport, RTC::DataProducer* dataProducer) = 0;
 			virtual void OnTransportDataProducerClosed(
@@ -250,7 +250,7 @@ namespace RTC
 	public:
 		void OnConsumerSendRtpPacket(RTC::Consumer* consumer, RTC::RtpPacket* packet) override;
 		void OnConsumerRetransmitRtpPacket(RTC::Consumer* consumer, RTC::RtpPacket* packet) override;
-		void OnConsumerKeyFrameRequested(RTC::Consumer* consumer, uint32_t mappedSsrc) override;
+		void OnConsumerKeyFrameRequested(RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp) override;
 		void OnConsumerNeedBitrateChange(RTC::Consumer* consumer) override;
 		void OnConsumerNeedZeroBitrate(RTC::Consumer* consumer) override;
 		void OnConsumerProducerClosed(RTC::Consumer* consumer) override;

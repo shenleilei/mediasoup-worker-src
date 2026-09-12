@@ -29,6 +29,7 @@ namespace RTC
 			// Use frame-marking.
 			if (frameMarking)
 			{
+				payloadDescriptor->hasFrameMarking = true;
 				// Read fields.
 				payloadDescriptor->s   = frameMarking->start;
 				payloadDescriptor->e   = frameMarking->end;
@@ -120,6 +121,10 @@ namespace RTC
 					{
 						const uint8_t subnal   = *(data + 1) & 0x1F;
 						const uint8_t startBit = *(data + 1) & 0x80;
+						const uint8_t endBit   = *(data + 1) & 0x40;
+
+						payloadDescriptor->isFragmentStart = startBit != 0;
+						payloadDescriptor->isFragmentEnd   = endBit != 0;
 
 						if (subnal == 5 && startBit == 128)
 						{

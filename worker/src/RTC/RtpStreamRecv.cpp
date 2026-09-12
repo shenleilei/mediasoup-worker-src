@@ -1295,9 +1295,13 @@ namespace RTC
 	{
 		MS_TRACE();
 
-		MS_DEBUG_TAG(rtx, "requesting key frame [ssrc:%" PRIu32 "]", this->params.ssrc);
+		MS_DEBUG_TAG(
+		  rtx, "key frame required by NACK generator [ssrc:%" PRIu32 "]", this->params.ssrc);
 
-		RequestKeyFrame();
+		// Let the listener (the Producer) schedule the request so cadence-mode
+		// spacing and request coalescing also apply to this path instead of the
+		// stream sending RTCP feedback on its own.
+		static_cast<RTC::RtpStreamRecv::Listener*>(this->listener)->OnRtpStreamKeyFrameRequired(this);
 	}
 
 	inline void RtpStreamRecv::OnNackGeneratorPacketsUnrecoverable(size_t packetCount)

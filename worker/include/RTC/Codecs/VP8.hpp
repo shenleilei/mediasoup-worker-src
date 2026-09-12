@@ -127,6 +127,17 @@ namespace RTC
 				{
 					return this->payloadDescriptor->isKeyFrame;
 				}
+				// VP8 has a codec start bit but no explicit frame-end bit.  The
+				// RTP marker is accepted only together with this codec start and
+				// a contiguous sequence interval, never as a standalone proof.
+				bool IsFrameStart() const override
+				{
+					return this->payloadDescriptor->start && this->payloadDescriptor->partitionIndex == 0;
+				}
+				bool IsFrameEnd(bool rtpMarker) const override
+				{
+					return rtpMarker;
+				}
 
 			private:
 				std::unique_ptr<PayloadDescriptor> payloadDescriptor;
