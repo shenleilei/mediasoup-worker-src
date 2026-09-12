@@ -1002,6 +1002,52 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer key frame tracker does not request recovery for an old candidate after a newer key frame",
+  "[producer][keyframe][completeness]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/VP9");
+	RTC::Producer producer(&shared, "producer-keyframe-old-timeout", &listener, request);
+
+	// Timestamp 90000 is incomplete: seq 101 is missing.
+	Vp9MediaPacket oldStart(100u, 90000u, true, false, false);
+	CHECK(producer.ReceiveRtpPacket(oldStart.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	Vp9MediaPacket oldTail(102u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(oldTail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer.testKeyFrameCandidateCount(ProducerSsrc) == 1u);
+
+	// A newer key frame completes.  It clears pending state and becomes the
+	// latest started candidate, while the old candidate remains for RTX repair.
+	Vp9MediaPacket newStart(103u, 90360u, true, false, false);
+	CHECK(producer.ReceiveRtpPacket(newStart.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	Vp9MediaPacket newMiddle(104u, 90360u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(newMiddle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	Vp9MediaPacket newTail(105u, 90360u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(newTail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	REQUIRE(producer.testKeyFrameCandidateCount(ProducerSsrc) == 1u);
+	REQUIRE(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	REQUIRE(listener.sentRtcpPackets.empty());
+
+	// The old candidate may still time out.  It must record incomplete evidence
+	// but must not issue another publisher key-frame request.
+	std::this_thread::sleep_for(std::chrono::milliseconds(550u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 1u);
+	CHECK(listener.sentRtcpPackets.empty());
+}
+
+TEST_CASE(
   "Producer key frame tracker does not infer an H265 frame start from a FU start",
   "[producer][keyframe][completeness][h265]")
 {
