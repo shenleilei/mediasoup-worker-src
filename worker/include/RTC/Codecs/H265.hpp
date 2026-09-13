@@ -31,6 +31,11 @@ namespace RTC
 				bool hasTid{ false };
 				bool hasTl0picidx{ false };
 				bool isKeyFrame{ false };
+				// NAL-level IRAP traffic: true on ANY fragment of an IRAP NAL
+				// (the FU header repeats the original NAL type on every
+				// fragment), so key-frame traffic remains observable even when
+				// the FU start fragment itself is lost.
+				bool isKeyFrameNal{ false };
 				bool hasVps{ false };
 				bool hasSps{ false };
 				bool hasPps{ false };
@@ -99,6 +104,10 @@ namespace RTC
 				bool IsKeyFrame() const override
 				{
 					return this->payloadDescriptor->isKeyFrame;
+				}
+				bool IsKeyFrameNal() const override
+				{
+					return this->payloadDescriptor->isKeyFrameNal;
 				}
 				bool IsFrameStart() const override
 				{

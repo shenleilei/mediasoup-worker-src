@@ -734,6 +734,10 @@ namespace RTC
 			return this->payloadDescriptorHandler->IsKeyFrame();
 		}
 
+		bool IsKeyFrameNal() const
+		{
+			return this->payloadDescriptorHandler && this->payloadDescriptorHandler->IsKeyFrameNal();
+		}
 		bool IsFrameStart() const
 		{
 			return this->payloadDescriptorHandler && this->payloadDescriptorHandler->IsFrameStart();

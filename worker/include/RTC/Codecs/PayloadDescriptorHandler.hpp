@@ -108,6 +108,15 @@ namespace RTC
 			virtual uint8_t GetSpatialLayer() const                                                  = 0;
 			virtual uint8_t GetTemporalLayer() const                                                 = 0;
 			virtual bool IsKeyFrame() const                                                          = 0;
+			// NAL-level key frame traffic: unlike IsKeyFrame() this is true on
+			// every fragment of a key frame NAL (the FU header repeats the
+			// original NAL type), so key-frame traffic stays observable when
+			// the start fragment is lost.  Defaults to IsKeyFrame() for codecs
+			// without fragment-repeated NAL types.
+			virtual bool IsKeyFrameNal() const
+			{
+				return IsKeyFrame();
+			}
 			// Codec-parsed frame boundary information.  A key-frame candidate may
 			// only start at IsFrameStart(); IsFrameEnd() must be corroborated by
 			// the RTP marker when the codec itself does not provide a reliable

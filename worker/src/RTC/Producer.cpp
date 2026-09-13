@@ -257,6 +257,11 @@ namespace RTC
 
 		this->shared->channelMessageRegistrator->UnregisterHandler(this->id);
 
+		// Stop candidate timers before any listener/manager teardown.  This
+		// may finalize active candidates as incomplete; the final evidence
+		// dump below must run after it so those results are included.
+		ClearKeyFrameCandidates("producer_closed", /*requestRecovery=*/false);
+
 		// Final evidence dump: a closed producer cannot emit later summaries,
 		// so the last observed state must be flushed now.
 		{
@@ -279,9 +284,6 @@ namespace RTC
 				MaybeLogKeyFrameSummary(ssrc, nowMs, /*force=*/true);
 			}
 		}
-
-		// Stop candidate timers before any listener/manager teardown.
-		ClearKeyFrameCandidates("producer_closed", /*requestRecovery=*/false);
 
 		// Delete all streams.
 		for (auto& kv : this->mapSsrcRtpStream)
@@ -1582,7 +1584,7 @@ namespace RTC
 		historyPacket.timestamp       = packet->GetTimestamp();
 		historyPacket.frameEnd        = packet->IsFrameEnd(packet->HasMarker());
 		historyPacket.marker          = packet->HasMarker();
-		historyPacket.keyFrameTraffic = packet->IsKeyFrame();
+		historyPacket.keyFrameTraffic = packet->IsKeyFrameNal();
 		history.packets[packet->GetSequenceNumber()] = historyPacket;
 
 		if (!history.started || RTC::SeqManager<uint16_t>::IsSeqHigherThan(packet->GetSequenceNumber(), history.newestSeq))
@@ -2537,6 +2539,15 @@ namespace RTC
 
 		// Emit the score event.
 		EmitScore();
+
+		// A score transition to zero means the stream went inactive (no RTP
+		// for the score window).  This is the event-driven flush point for a
+		// stream that stops sending while the producer stays alive: the last
+		// key frame evidence must not stay in memory until close.
+		if (score == 0u && previousScore != 0u)
+		{
+			MaybeLogKeyFrameSummary(rtpStream->GetSsrc(), DepLibUV::GetTimeMs(), /*force=*/true);
+		}
 	}
 
 	inline void Producer::OnRtpStreamSendRtcpPacket(

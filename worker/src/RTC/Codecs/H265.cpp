@@ -84,7 +84,8 @@ namespace RTC
 				RecordParameterSet(descriptor, nalType);
 				if (IsIrapNalType(nalType))
 				{
-					descriptor.isKeyFrame = true;
+					descriptor.isKeyFrame    = true;
+					descriptor.isKeyFrameNal = true;
 				}
 				// The slice segment header follows the 2-byte NAL unit header.
 				// A truncated VCL payload without a slice header stays unknown.
@@ -128,7 +129,8 @@ namespace RTC
 					RecordParameterSet(descriptor, nalType);
 					if (IsIrapNalType(nalType))
 					{
-						descriptor.isKeyFrame = true;
+						descriptor.isKeyFrame    = true;
+						descriptor.isKeyFrameNal = true;
 					}
 					if (IsVclNalType(nalType) && naluSize >= 3)
 					{
@@ -180,6 +182,13 @@ namespace RTC
 				if (start && IsIrapNalType(fuType))
 				{
 					descriptor.isKeyFrame = true;
+				}
+				// The FU header repeats the original NAL type on every
+				// fragment; key-frame NAL traffic is therefore observable even
+				// when the start fragment is lost.
+				if (IsIrapNalType(fuType))
+				{
+					descriptor.isKeyFrameNal = true;
 				}
 				// On a start fragment the slice segment header follows the FU
 				// header (2-byte NAL header is reconstructed from the FU
@@ -241,6 +250,10 @@ namespace RTC
 				if (frameMarking->start && frameMarking->independent)
 				{
 					payloadDescriptor->isKeyFrame = true;
+				}
+				if (frameMarking->independent)
+				{
+					payloadDescriptor->isKeyFrameNal = true;
 				}
 			}
 

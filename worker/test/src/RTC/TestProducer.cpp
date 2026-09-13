@@ -1476,6 +1476,41 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer key frame tracker warns when a key frame FU start fragment is lost",
+  "[producer][keyframe][completeness][h264][first-slice][no-start][fu-start-lost]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-h264-fu-start-lost", &listener, request);
+
+	// The FU start fragment (and with it the first slice) is lost.  Only
+	// middle and tail fragments arrive: none of them is IsKeyFrame(), but the
+	// FU header repeats the IDR NAL type on every fragment, so key frame
+	// traffic remains observable.
+	H264MediaPacket middle(101u, 90000u, false, false, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(middle.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE_FALSE(middle.packet->IsKeyFrame());
+	REQUIRE(middle.packet->IsKeyFrameNal());
+
+	H264MediaPacket tail(102u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(tail.packet->HasMarker());
+	REQUIRE_FALSE(tail.packet->IsKeyFrame());
+	REQUIRE(tail.packet->IsKeyFrameNal());
+
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testSawKeyFrameTraffic(ProducerSsrc, 90000u));
+	CHECK(producer.testKeyFrameNoStartWarned(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
   "Producer key frame evidence tracks the last complete and incomplete times",
   "[producer][keyframe][completeness][evidence]")
 {

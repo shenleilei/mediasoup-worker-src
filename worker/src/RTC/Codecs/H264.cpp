@@ -57,6 +57,10 @@ namespace RTC
 				{
 					payloadDescriptor->isKeyFrame = true;
 				}
+				if (frameMarking->independent)
+				{
+					payloadDescriptor->isKeyFrameNal = true;
+				}
 			}
 
 			// NOTE: Unfortunately libwebrtc produces wrong Frame-Marking (without i=1 in
@@ -75,7 +79,8 @@ namespace RTC
 					// IDR (instantaneous decoding picture).
 					case 5:
 					{
-						payloadDescriptor->isKeyFrame = true;
+						payloadDescriptor->isKeyFrame    = true;
+						payloadDescriptor->isKeyFrameNal = true;
 						[[fallthrough]];
 					}
 
@@ -112,7 +117,8 @@ namespace RTC
 
 							if (subnal == 5)
 							{
-								payloadDescriptor->isKeyFrame = true;
+								payloadDescriptor->isKeyFrame    = true;
+								payloadDescriptor->isKeyFrameNal = true;
 							}
 
 							// Check if there is room for the indicated NAL unit size.
@@ -154,6 +160,13 @@ namespace RTC
 						if (subnal == 5 && startBit == 128)
 						{
 							payloadDescriptor->isKeyFrame = true;
+						}
+						// The FU header repeats the original NAL type on every
+						// fragment; IDR traffic is observable even when the
+						// start fragment is lost.
+						if (subnal == 5)
+						{
+							payloadDescriptor->isKeyFrameNal = true;
 						}
 						// On a start fragment the slice header follows the FU
 						// header.  first_mb_in_slice is ue(v); value 0 encodes
