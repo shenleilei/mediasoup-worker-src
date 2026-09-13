@@ -288,14 +288,23 @@ namespace RTC
 		{
 			return this->mapSsrcLastKeyFrameNoStartWarnAtMs.contains(ssrc);
 		}
-		bool testLastKeyFrameNoStartStreamStartWindow(uint32_t ssrc) const
+		bool testLastKeyFrameNoStartInfoClassified(uint32_t ssrc) const
 		{
-			auto it = this->mapSsrcLastNoStartStreamStartWindow.find(ssrc);
-			return it != this->mapSsrcLastNoStartStreamStartWindow.end() && it->second;
+			auto it = this->mapSsrcLastNoStartInfoClassified.find(ssrc);
+			return it != this->mapSsrcLastNoStartInfoClassified.end() && it->second;
 		}
-		void testSetKeyFrameStreamStartWindowMs(uint64_t windowMs)
+		uint64_t testKeyFrameNoStartWarningCount(uint32_t ssrc) const
 		{
-			this->keyFrameStreamStartWindowMs = windowMs;
+			auto it = this->mapSsrcNoStartWarningCount.find(ssrc);
+			return it == this->mapSsrcNoStartWarningCount.end() ? 0u : it->second;
+		}
+		void testSetKeyFrameNoStartWarnIntervalMs(uint64_t intervalMs)
+		{
+			this->keyFrameNoStartWarnIntervalMs = intervalMs;
+		}
+		void testResetKeyFrameGenerationState(uint32_t ssrc)
+		{
+			ResetKeyFrameGenerationState(ssrc);
 		}
 		uint64_t testLastKeyFrameCompleteAtMs(uint32_t ssrc) const
 		{
@@ -404,6 +413,11 @@ namespace RTC
 		void WarnKeyFrameEndWithoutStart(uint32_t ssrc, uint32_t timestamp, uint16_t seq, uint64_t nowMs);
 		bool SawKeyFrameTrafficForTimestamp(uint32_t ssrc, uint32_t timestamp) const;
 		void StartKeyFrameEvidenceTimerIfNeeded();
+		// Reset per-generation key frame evidence state for an SSRC (stream
+		// rebuild).  Lifetime counters (complete/incomplete totals, last
+		// event times) are intentionally preserved; only generation-scoped
+		// classification state is cleared.
+		void ResetKeyFrameGenerationState(uint32_t ssrc);
 		void StopKeyFrameEvidenceTimer() noexcept;
 		void FlushDirtyKeyFrameSummaries(uint64_t nowMs);
 		bool KeyFrameEvidenceDirty(uint32_t ssrc) const;
@@ -488,12 +502,21 @@ namespace RTC
 		absl::flat_hash_map<uint32_t, KeyFrameSummarySnapshot> mapSsrcKeyFrameSummarySnapshot;
 		uint64_t keyFrameSummaryEmissions{ 0u };
 		absl::flat_hash_map<uint32_t, KeyFrameFirstReceived> mapSsrcKeyFrameFirstReceived;
-		// Classification window: a no-start warning inside this window after
-		// the stream's first received packet is a connection-establishment
-		// truncation (benign); outside it is mid-stream loss (incident).
-		uint64_t keyFrameStreamStartWindowMs{ 30000u };
-		// Last no-start classification per SSRC (true = stream-start window).
-		absl::flat_hash_map<uint32_t, bool> mapSsrcLastNoStartStreamStartWindow;
+		// Emitted no-start warnings per SSRC.  Repeated warnings before the
+		// first complete key frame escalate from INFO back to WARN: a stream
+		// that never completes a key frame is anomalous even if each
+		// individual event is consistent with connection truncation.
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcNoStartWarningCount;
+		// Per-generation (stream-rebuild-reset) flag: this SSRC has observed
+		// at least one complete key frame in the CURRENT generation.  The
+		// cumulative complete counters are lifetime stats and must not drive
+		// phase classification across a rebuild.
+		absl::flat_hash_set<uint32_t> ssrcsSeenCompleteKeyFrame;
+		// Rate limit between emitted no-start warnings (test-overridable).
+		uint64_t keyFrameNoStartWarnIntervalMs{ 30000u };
+		// Last no-start classification per SSRC: true = logged at INFO as
+		// pre-first-complete (possible connection truncation), false = WARN.
+		absl::flat_hash_map<uint32_t, bool> mapSsrcLastNoStartInfoClassified;
 		// Viewer-request suppression diagnostics: cumulative count plus a
 		// rate-limited WARN so freeze incidents can prove "viewers asked, the
 		// cadence policy held them back" without flooding the log.

@@ -1614,7 +1614,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "Producer no-start warning classifies stream-start truncation versus mid-stream loss",
+  "Producer no-start warning classifies by phase and escalates repeated pre-complete events",
   "[producer][keyframe][completeness][no-start][classification]")
 {
 	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
@@ -1623,35 +1623,92 @@ TEST_CASE(
 	flatbuffers::FlatBufferBuilder builder;
 	const auto* request = BuildProduceRequest(
 	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
-	// Shrink the classification window so the mid-stream case is testable
-	// without a real 30 second sleep.
+	// Short no-start rate limit so the escalation case is testable.
 	RTC::Producer producer(&shared, "producer-keyframe-no-start-class", &listener, request);
-	producer.testSetKeyFrameStreamStartWindowMs(50u);
+	producer.testSetKeyFrameNoStartWarnIntervalMs(20u);
 
-	// Case 1: warning inside the stream-start window is classified as
-	// connection-establishment truncation.
-	H264MediaPacket slice2Start(101u, 90000u, true, false, false);
-	CHECK(
-	  producer.ReceiveRtpPacket(slice2Start.packet.get()) ==
-	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
-	H264MediaPacket tail(103u, 90000u, false, true, true);
-	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	// Case A: a no-start before any complete key frame is phase
+	// pre-first-complete and logged at INFO.
+	H264MediaPacket a1(101u, 90000u, true, false, false);
+	CHECK(producer.ReceiveRtpPacket(a1.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket a2(103u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(a2.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 	REQUIRE(producer.testKeyFrameNoStartWarned(ProducerSsrc));
-	CHECK(producer.testLastKeyFrameNoStartStreamStartWindow(ProducerSsrc));
+	REQUIRE(producer.testKeyFrameNoStartWarningCount(ProducerSsrc) == 1u);
+	REQUIRE(producer.testLastKeyFrameNoStartInfoClassified(ProducerSsrc));
 
-	// Case 2: after the window elapsed, the same evidence is classified as
-	// mid-stream loss.
-	std::this_thread::sleep_for(std::chrono::milliseconds(120u));
-	H264MediaPacket lateSlice2Start(201u, 180000u, true, false, false);
-	CHECK(
-	  producer.ReceiveRtpPacket(lateSlice2Start.packet.get()) ==
-	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
-	// Advance past the no-start rate limit (30s)?  No: the rate limiter would
-	// suppress the second warning.  The classification state is updated only
-	// when a warning is emitted, so instead verify the classification logic
-	// through a second SSRC-free producer is unnecessary; the stream-start
-	// case above and the window member are covered.
-	(void)0;
+	// Case B (review counter-example): after a complete key frame, a no-start
+	// is WARN regardless of elapsed time — real loss on an established stream
+	// must not be downgraded.
+	std::this_thread::sleep_for(std::chrono::milliseconds(30u));
+	H264MediaPacket b1(200u, 180000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(producer.ReceiveRtpPacket(b1.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket b2(201u, 180000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(b2.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(30u));
+	H264MediaPacket c1(301u, 270000u, true, false, false);
+	CHECK(producer.ReceiveRtpPacket(c1.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket c2(303u, 270000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(c2.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer.testKeyFrameNoStartWarningCount(ProducerSsrc) == 2u);
+	CHECK_FALSE(producer.testLastKeyFrameNoStartInfoClassified(ProducerSsrc));
+
+	// Case C: repeated pre-first-complete no-starts escalate to WARN.  Use a
+	// fresh producer because the one above already completed a key frame.
+	flatbuffers::FlatBufferBuilder builder2;
+	const auto* request2 = BuildProduceRequest(
+	  builder2, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer2(&shared, "producer-keyframe-no-start-escalate", &listener, request2);
+	producer2.testSetKeyFrameNoStartWarnIntervalMs(20u);
+
+	for (uint32_t ts = 90000u; ts <= 270000u; ts += 90000u)
+	{
+		H264MediaPacket start(ts == 90000u ? 100u : static_cast<uint16_t>(100u + (ts - 90000u) / 1000u * 10u), ts, true, false, false);
+		CHECK(producer2.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+		H264MediaPacket tail(static_cast<uint16_t>(start.packet->GetSequenceNumber() + 2u), ts, false, true, true);
+		CHECK(producer2.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+		std::this_thread::sleep_for(std::chrono::milliseconds(30u));
+	}
+
+	REQUIRE(producer2.testKeyFrameNoStartWarningCount(ProducerSsrc) >= 3u);
+	CHECK_FALSE(producer2.testLastKeyFrameNoStartInfoClassified(ProducerSsrc));
+
+	// Case D: a stream rebuild resets the per-generation phase.  The same
+	// SSRC completes key frames, is rebuilt, and its first no-start must
+	// classify pre-first-complete again (INFO) even though the lifetime
+	// complete counter is non-zero.
+	flatbuffers::FlatBufferBuilder builder3;
+	const auto* request3 = BuildProduceRequest(
+	  builder3, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer3(&shared, "producer-keyframe-no-start-rebuild", &listener, request3);
+	producer3.testSetKeyFrameNoStartWarnIntervalMs(20u);
+
+	H264MediaPacket d1(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(producer3.ReceiveRtpPacket(d1.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket d2(101u, 90000u, false, true, true);
+	CHECK(producer3.ReceiveRtpPacket(d2.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer3.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+
+	// Stream rebuild: same SSRC, new generation.  Uses the same reset the
+	// rebuild path calls in production code.
+	producer3.testResetKeyFrameGenerationState(ProducerSsrc);
+
+	// Lifetime counter persists; generation flag is cleared.
+	REQUIRE(producer3.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	REQUIRE(producer3.testKeyFrameNoStartWarningCount(ProducerSsrc) == 0u);
+
+	// First no-start of the new generation classifies pre-first-complete
+	// (INFO) despite the non-zero lifetime counter.
+	std::this_thread::sleep_for(std::chrono::milliseconds(30u));
+	H264MediaPacket e1(300u, 270000u, true, false, false);
+	CHECK(producer3.ReceiveRtpPacket(e1.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket e2(302u, 270000u, false, true, true);
+	CHECK(producer3.ReceiveRtpPacket(e2.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(producer3.testKeyFrameNoStartWarningCount(ProducerSsrc) == 1u);
+	REQUIRE(producer3.testLastKeyFrameNoStartInfoClassified(ProducerSsrc));
+
 }
 
 TEST_CASE(

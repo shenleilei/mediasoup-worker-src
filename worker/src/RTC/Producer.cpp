@@ -27,7 +27,6 @@ namespace RTC
 	// Production-visible evidence cadence (worker INFO): one summary per SSRC
 	// per interval; bounded missing-sequence list on incomplete WARNs.
 	static constexpr uint64_t KeyFrameSummaryIntervalMs{ 60000u };
-	static constexpr uint64_t KeyFrameNoStartWarnIntervalMs{ 30000u };
 	static constexpr size_t KeyFrameMissingSeqListMax{ 16u };
 
 	// Observation-only key frame integrity mode.  Parsed per producer
@@ -1344,6 +1343,7 @@ namespace RTC
 		{
 			++this->mapSsrcCompleteKeyFrames[ssrc];
 			this->mapSsrcLastKeyFrameCompleteAtMs[ssrc] = nowMs;
+			this->ssrcsSeenCompleteKeyFrame.insert(ssrc);
 			StartKeyFrameEvidenceTimerIfNeeded();
 
 			// Only the newest started candidate may clear pending state or refresh
@@ -1462,6 +1462,17 @@ namespace RTC
 		}
 
 		return candidate.receivedSeqs.count(candidate.endSeq) != 0u;
+	}
+
+	void Producer::ResetKeyFrameGenerationState(uint32_t ssrc)
+	{
+		this->mapSsrcKeyFramePacketHistory.erase(ssrc);
+		this->mapSsrcKeyFrameFirstReceived.erase(ssrc);
+		this->keyFrameStartDisabledSsrcs.erase(ssrc);
+		this->ssrcsSeenCompleteKeyFrame.erase(ssrc);
+		this->mapSsrcNoStartWarningCount.erase(ssrc);
+		this->mapSsrcLastNoStartInfoClassified.erase(ssrc);
+		this->mapSsrcLastKeyFrameNoStartWarnAtMs.erase(ssrc);
 	}
 
 	void Producer::StartKeyFrameEvidenceTimerIfNeeded()
@@ -1642,48 +1653,56 @@ namespace RTC
 	{
 		auto it = this->mapSsrcLastKeyFrameNoStartWarnAtMs.find(ssrc);
 		if (it != this->mapSsrcLastKeyFrameNoStartWarnAtMs.end() &&
-		    nowMs - it->second < KeyFrameNoStartWarnIntervalMs)
+		    nowMs - it->second < this->keyFrameNoStartWarnIntervalMs)
 		{
 			return;
 		}
 
 		this->mapSsrcLastKeyFrameNoStartWarnAtMs[ssrc] = nowMs;
 
-		// Classification: a no-start inside the stream-start window is the
-		// expected connection-establishment truncation (the SFU begins
-		// accepting mid-frame); outside it, the frame start was lost on an
-		// established stream (real uplink-loss candidate).  firstReceivedSeq
-		// and lossDetected make the distinction mechanical:
-		//   - stream-start window + firstSeq in mid-stream range + no
-		//     detected gap => truncation at acceptance;
-		//   - mid-stream + lossDetected => real loss.
+		// Factual context only; interpretation is left to the reader.
 		auto firstIt = this->mapSsrcKeyFrameFirstReceived.find(ssrc);
 		const uint16_t firstSeq  = firstIt != this->mapSsrcKeyFrameFirstReceived.end() ? firstIt->second.firstSeq : 0u;
 		const uint64_t firstAtMs = firstIt != this->mapSsrcKeyFrameFirstReceived.end() ? firstIt->second.firstAtMs : 0u;
-		const bool streamStartWindow =
-		  firstAtMs != 0u && nowMs - firstAtMs < this->keyFrameStreamStartWindowMs;
-		this->mapSsrcLastNoStartStreamStartWindow[ssrc] = streamStartWindow;
+		const uint64_t completeSoFar =
+		  this->mapSsrcCompleteKeyFrames.count(ssrc) != 0u ? this->mapSsrcCompleteKeyFrames[ssrc] : 0u;
+		const uint64_t noStartWarnings = ++this->mapSsrcNoStartWarningCount[ssrc];
+		// Phase uses the per-generation flag, not the lifetime counter: a
+		// rebuilt stream must classify as pre-first-complete until its own
+		// first complete key frame even if the previous generation completed
+		// many.
+		const bool seenCompleteThisGeneration = this->ssrcsSeenCompleteKeyFrame.contains(ssrc);
 
-		bool lossDetected{ false };
-		auto streamIt = this->mapSsrcRtpStream.find(ssrc);
-		if (streamIt != this->mapSsrcRtpStream.end() && streamIt->second != nullptr)
-		{
-			lossDetected = streamIt->second->GetFractionLost() > 0u;
-		}
+		// Phase classification (a phase, NOT a harm verdict):
+		//   - pre-first-complete: no complete key frame has been observed on
+		//     this stream yet.  Consistent with connection-establishment
+		//     truncation, but persistent start loss is also possible.
+		//   - established: at least one complete key frame was observed; a
+		//     missing start on an established stream is a loss candidate.
+		// Repeated pre-first-complete warnings escalate to WARN because a
+		// stream that never completes a key frame is anomalous even if each
+		// event individually resembles truncation.
+		const bool preFirstComplete = !seenCompleteThisGeneration;
+		const bool escalated        = preFirstComplete && noStartWarnings >= 3u;
+		const bool infoClassified   = preFirstComplete && !escalated;
+		this->mapSsrcLastNoStartInfoClassified[ssrc] = infoClassified;
 
-		if (streamStartWindow)
+		if (infoClassified)
 		{
 			MS_EVIDENCE_INFO(
 			  "upstream key frame ended without a credible start [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", endSeq:%" PRIu16
 			  ", firstReceivedSeq:%" PRIu16 ", firstReceivedAgeMs:%" PRIu64
-			  ", lossDetected:%s, firstSliceHeuristic:%s, reason:stream-start-window]",
+			  ", completeKeyFrames:%" PRIu64 ", noStartWarnings:%" PRIu64
+			  ", firstSliceHeuristic:%s, phase:pre-first-complete, "
+			  "note:phase-not-a-harm-verdict]",
 			  ssrc,
 			  timestamp,
 			  seq,
 			  firstSeq,
 			  firstAtMs == 0u ? 0u : nowMs - firstAtMs,
-			  lossDetected ? "true" : "false",
+			  completeSoFar,
+			  noStartWarnings,
 			  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active");
 		}
 		else
@@ -1692,14 +1711,17 @@ namespace RTC
 			  "upstream key frame ended without a credible start [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", endSeq:%" PRIu16
 			  ", firstReceivedSeq:%" PRIu16 ", firstReceivedAgeMs:%" PRIu64
-			  ", lossDetected:%s, firstSliceHeuristic:%s, reason:mid-stream-loss]",
+			  ", completeKeyFrames:%" PRIu64 ", noStartWarnings:%" PRIu64
+			  ", firstSliceHeuristic:%s, phase:%s]",
 			  ssrc,
 			  timestamp,
 			  seq,
 			  firstSeq,
 			  firstAtMs == 0u ? 0u : nowMs - firstAtMs,
-			  lossDetected ? "true" : "false",
-			  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active");
+			  completeSoFar,
+			  noStartWarnings,
+			  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active",
+			  escalated ? "pre-first-complete-escalated" : "established");
 		}
 	}
 
@@ -2149,9 +2171,7 @@ namespace RTC
 		// flush the final state of the old generation first.
 		MaybeLogKeyFrameSummary(ssrc, DepLibUV::GetTimeMs(), /*force=*/true);
 		ClearKeyFrameCandidate(ssrc, "stream_rebuilt", /*requestRecovery=*/false);
-		this->mapSsrcKeyFramePacketHistory.erase(ssrc);
-		this->mapSsrcKeyFrameFirstReceived.erase(ssrc);
-		this->keyFrameStartDisabledSsrcs.erase(ssrc);
+		ResetKeyFrameGenerationState(ssrc);
 
 		// Start the key frame cadence baseline for the new stream.
 		MarkKeyFrameCadenceBaseline(ssrc, DepLibUV::GetTimeMs());
