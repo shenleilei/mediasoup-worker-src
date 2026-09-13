@@ -257,6 +257,9 @@ namespace RTC
 
 		this->shared->channelMessageRegistrator->UnregisterHandler(this->id);
 
+		// Stop the evidence timer before any teardown that could fire it.
+		StopKeyFrameEvidenceTimer();
+
 		// Stop candidate timers before any listener/manager teardown.  This
 		// may finalize active candidates as incomplete; the final evidence
 		// dump below must run after it so those results are included.
@@ -266,18 +269,7 @@ namespace RTC
 		// so the last observed state must be flushed now.
 		{
 			absl::flat_hash_set<uint32_t> evidenceSsrcs;
-			for (const auto& kv : this->mapSsrcCompleteKeyFrames)
-			{
-				evidenceSsrcs.insert(kv.first);
-			}
-			for (const auto& kv : this->mapSsrcIncompleteKeyFrames)
-			{
-				evidenceSsrcs.insert(kv.first);
-			}
-			for (const auto ssrc : this->keyFrameStartDisabledSsrcs)
-			{
-				evidenceSsrcs.insert(ssrc);
-			}
+			CollectKeyFrameEvidenceSsrcs(evidenceSsrcs);
 			const uint64_t nowMs = DepLibUV::GetTimeMs();
 			for (const auto ssrc : evidenceSsrcs)
 			{
@@ -444,6 +436,17 @@ namespace RTC
 				// A paused producer does not forward media.  Resume already forces a
 				// fresh key frame, so retain no partial candidate across pause.
 				ClearKeyFrameCandidates("paused", /*requestRecovery=*/false);
+
+				// Pausing is a stream-stop-like boundary: flush pending evidence.
+				{
+					absl::flat_hash_set<uint32_t> evidenceSsrcs;
+					CollectKeyFrameEvidenceSsrcs(evidenceSsrcs);
+					const uint64_t nowMs = DepLibUV::GetTimeMs();
+					for (const auto ssrc : evidenceSsrcs)
+					{
+						MaybeLogKeyFrameSummary(ssrc, nowMs, /*force=*/true);
+					}
+				}
 
 				// Pause all streams.
 				for (auto& kv : this->mapSsrcRtpStream)
@@ -1141,6 +1144,7 @@ namespace RTC
 					  packet->GetTimestamp(),
 					  packet->GetSequenceNumber());
 					this->keyFrameStartDisabledSsrcs.insert(ssrc);
+					StartKeyFrameEvidenceTimerIfNeeded();
 					ClearKeyFrameCandidate(ssrc, "frame_start_conflict", /*requestRecovery=*/false);
 
 					return KeyFrameTrackResult::IGNORED;
@@ -1337,6 +1341,7 @@ namespace RTC
 		{
 			++this->mapSsrcCompleteKeyFrames[ssrc];
 			this->mapSsrcLastKeyFrameCompleteAtMs[ssrc] = nowMs;
+			StartKeyFrameEvidenceTimerIfNeeded();
 
 			// Only the newest started candidate may clear pending state or refresh
 			// the cadence baseline.  An older candidate completing after a newer
@@ -1371,6 +1376,7 @@ namespace RTC
 
 		++this->mapSsrcIncompleteKeyFrames[ssrc];
 		this->mapSsrcLastKeyFrameIncompleteAtMs[ssrc] = nowMs;
+		StartKeyFrameEvidenceTimerIfNeeded();
 
 		if (std::string_view(reason) == "timeout")
 		{
@@ -1455,6 +1461,105 @@ namespace RTC
 		return candidate.receivedSeqs.count(candidate.endSeq) != 0u;
 	}
 
+	void Producer::StartKeyFrameEvidenceTimerIfNeeded()
+	{
+		if (this->keyFrameEvidenceTimer != nullptr || this->keyFrameEvidenceFlushIntervalMs == 0u)
+		{
+			return;
+		}
+
+		this->keyFrameEvidenceTimer = new TimerHandle(this);
+		this->keyFrameEvidenceTimer->Start(
+		  this->keyFrameEvidenceFlushIntervalMs, this->keyFrameEvidenceFlushIntervalMs);
+	}
+
+	void Producer::StopKeyFrameEvidenceTimer() noexcept
+	{
+		if (this->keyFrameEvidenceTimer == nullptr)
+		{
+			return;
+		}
+
+		this->keyFrameEvidenceTimer->Stop();
+		delete this->keyFrameEvidenceTimer;
+		this->keyFrameEvidenceTimer = nullptr;
+	}
+
+	Producer::KeyFrameSummarySnapshot Producer::CurrentKeyFrameSummarySnapshot(uint32_t ssrc) const
+	{
+		KeyFrameSummarySnapshot snapshot;
+		snapshot.complete = this->mapSsrcCompleteKeyFrames.count(ssrc) != 0u
+		                      ? this->mapSsrcCompleteKeyFrames.at(ssrc)
+		                      : 0u;
+		snapshot.incomplete = this->mapSsrcIncompleteKeyFrames.count(ssrc) != 0u
+		                        ? this->mapSsrcIncompleteKeyFrames.at(ssrc)
+		                        : 0u;
+		snapshot.lastCompleteAtMs = this->mapSsrcLastKeyFrameCompleteAtMs.count(ssrc) != 0u
+		                              ? this->mapSsrcLastKeyFrameCompleteAtMs.at(ssrc)
+		                              : 0u;
+		snapshot.lastIncompleteAtMs = this->mapSsrcLastKeyFrameIncompleteAtMs.count(ssrc) != 0u
+		                                ? this->mapSsrcLastKeyFrameIncompleteAtMs.at(ssrc)
+		                                : 0u;
+		return snapshot;
+	}
+
+	bool Producer::KeyFrameEvidenceDirty(uint32_t ssrc) const
+	{
+		auto it = this->mapSsrcKeyFrameSummarySnapshot.find(ssrc);
+		if (it == this->mapSsrcKeyFrameSummarySnapshot.end())
+		{
+			return true;
+		}
+
+		return !(it->second == CurrentKeyFrameSummarySnapshot(ssrc));
+	}
+
+	void Producer::CollectKeyFrameEvidenceSsrcs(absl::flat_hash_set<uint32_t>& ssrcs) const
+	{
+		for (const auto& kv : this->mapSsrcCompleteKeyFrames)
+		{
+			ssrcs.insert(kv.first);
+		}
+		for (const auto& kv : this->mapSsrcIncompleteKeyFrames)
+		{
+			ssrcs.insert(kv.first);
+		}
+		for (const auto ssrc : this->keyFrameStartDisabledSsrcs)
+		{
+			ssrcs.insert(ssrc);
+		}
+	}
+
+	void Producer::FlushDirtyKeyFrameSummaries(uint64_t nowMs)
+	{
+		absl::flat_hash_set<uint32_t> evidenceSsrcs;
+		CollectKeyFrameEvidenceSsrcs(evidenceSsrcs);
+
+		bool stillDirty{ false };
+		for (const auto ssrc : evidenceSsrcs)
+		{
+			if (!KeyFrameEvidenceDirty(ssrc))
+			{
+				continue;
+			}
+
+			MaybeLogKeyFrameSummary(ssrc, nowMs, /*force=*/true);
+			// Re-check after the flush: emitting updates the snapshot, but a
+			// concurrent producer-close path could have added new evidence.
+			if (KeyFrameEvidenceDirty(ssrc))
+			{
+				stillDirty = true;
+			}
+		}
+
+		// Nothing new remains: stop the timer until new evidence arrives, so
+		// idle producers do not keep a resident timer.
+		if (!stillDirty)
+		{
+			StopKeyFrameEvidenceTimer();
+		}
+	}
+
 	void Producer::MaybeLogKeyFrameSummary(uint32_t ssrc, uint64_t nowMs, bool force)
 	{
 		if (!force)
@@ -1481,6 +1586,8 @@ namespace RTC
 		}
 
 		this->mapSsrcLastKeyFrameSummaryAtMs[ssrc] = nowMs;
+		this->mapSsrcKeyFrameSummarySnapshot[ssrc] = CurrentKeyFrameSummarySnapshot(ssrc);
+		++this->keyFrameSummaryEmissions;
 
 		auto completeIt = this->mapSsrcLastKeyFrameCompleteAtMs.find(ssrc);
 		auto incompleteIt = this->mapSsrcLastKeyFrameIncompleteAtMs.find(ssrc);
@@ -2539,15 +2646,6 @@ namespace RTC
 
 		// Emit the score event.
 		EmitScore();
-
-		// A score transition to zero means the stream went inactive (no RTP
-		// for the score window).  This is the event-driven flush point for a
-		// stream that stops sending while the producer stays alive: the last
-		// key frame evidence must not stay in memory until close.
-		if (score == 0u && previousScore != 0u)
-		{
-			MaybeLogKeyFrameSummary(rtpStream->GetSsrc(), DepLibUV::GetTimeMs(), /*force=*/true);
-		}
 	}
 
 	inline void Producer::OnRtpStreamSendRtcpPacket(
@@ -2641,6 +2739,12 @@ namespace RTC
 	void Producer::OnTimer(TimerHandle* timer)
 	{
 		MS_TRACE();
+
+		if (timer == this->keyFrameEvidenceTimer)
+		{
+			FlushDirtyKeyFrameSummaries(DepLibUV::GetTimeMs());
+			return;
+		}
 
 		for (auto& ssrcKv : this->mapSsrcKeyFrameCandidates)
 		{

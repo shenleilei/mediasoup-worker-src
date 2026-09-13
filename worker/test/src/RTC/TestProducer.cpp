@@ -1511,6 +1511,64 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer key frame evidence timer flushes the latest state after a stream stops sending",
+  "[producer][keyframe][completeness][evidence][stop-flush]")
+{
+	REQUIRE(setenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE", "observe", 1) == 0);
+
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	// Single-stream video in legacy mode: there is no RTP-inactivity score
+	// event, so only the evidence timer can flush after the stream stops.
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/0u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-stop-flush", &listener, request);
+	REQUIRE(producer.testKeyFrameIntegrityObserve());
+	producer.testSetKeyFrameEvidenceFlushIntervalMs(300u);
+
+	// First complete key frame emits the initial summary (event path).
+	H264MediaPacket first1(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(first1.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket first2(101u, 90000u, false, true, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(first2.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	REQUIRE(producer.testKeyFrameSummaryEmissionCount() == 1u);
+	REQUIRE(producer.testKeyFrameEvidenceTimerActive());
+
+	// Second complete key frame arrives within the summary rate window: no
+	// event summary is emitted, but the state is now dirty.
+	H264MediaPacket second1(200u, 94500u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(second1.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket second2(201u, 94500u, false, true, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(second2.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 2u);
+	CHECK(producer.testKeyFrameSummaryEmissionCount() == 1u);
+
+	// The stream stops sending.  The producer stays alive; only the evidence
+	// timer may flush the latest state.
+	std::this_thread::sleep_for(std::chrono::milliseconds(450u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	REQUIRE(producer.testKeyFrameSummaryEmissionCount() == 2u);
+	CHECK(producer.testLastKeyFrameCompleteAtMs(ProducerSsrc) != 0u);
+	// Nothing dirty remains: the timer stops until new evidence arrives.
+	CHECK_FALSE(producer.testKeyFrameEvidenceTimerActive());
+
+	unsetenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE");
+}
+
+TEST_CASE(
   "Producer key frame evidence tracks the last complete and incomplete times",
   "[producer][keyframe][completeness][evidence]")
 {

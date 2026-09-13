@@ -111,6 +111,24 @@ namespace RTC
 			bool keyFrameTraffic{ false };
 		};
 
+		// Snapshot of the summarized evidence state, used to detect changes
+		// since the last emitted summary (the evidence flush timer only logs
+		// when state actually changed).
+		struct KeyFrameSummarySnapshot
+		{
+			uint64_t complete{ 0u };
+			uint64_t incomplete{ 0u };
+			uint64_t lastCompleteAtMs{ 0u };
+			uint64_t lastIncompleteAtMs{ 0u };
+
+			bool operator==(const KeyFrameSummarySnapshot& other) const
+			{
+				return this->complete == other.complete && this->incomplete == other.incomplete &&
+				       this->lastCompleteAtMs == other.lastCompleteAtMs &&
+				       this->lastIncompleteAtMs == other.lastIncompleteAtMs;
+			}
+		};
+
 		struct KeyFramePacketHistory
 		{
 			absl::flat_hash_map<uint16_t, KeyFrameHistoryPacket> packets;
@@ -270,6 +288,18 @@ namespace RTC
 			auto it = this->mapSsrcLastKeyFrameIncompleteAtMs.find(ssrc);
 			return it == this->mapSsrcLastKeyFrameIncompleteAtMs.end() ? 0u : it->second;
 		}
+		uint64_t testKeyFrameSummaryEmissionCount() const
+		{
+			return this->keyFrameSummaryEmissions;
+		}
+		bool testKeyFrameEvidenceTimerActive() const
+		{
+			return this->keyFrameEvidenceTimer != nullptr;
+		}
+		void testSetKeyFrameEvidenceFlushIntervalMs(uint64_t intervalMs)
+		{
+			this->keyFrameEvidenceFlushIntervalMs = intervalMs;
+		}
 		uint64_t testCompleteKeyFrameCount(uint32_t ssrc) const
 		{
 			auto it = this->mapSsrcCompleteKeyFrames.find(ssrc);
@@ -354,6 +384,12 @@ namespace RTC
 		void MaybeLogKeyFrameSummary(uint32_t ssrc, uint64_t nowMs, bool force = false);
 		void WarnKeyFrameEndWithoutStart(uint32_t ssrc, uint32_t timestamp, uint16_t seq, uint64_t nowMs);
 		bool SawKeyFrameTrafficForTimestamp(uint32_t ssrc, uint32_t timestamp) const;
+		void StartKeyFrameEvidenceTimerIfNeeded();
+		void StopKeyFrameEvidenceTimer() noexcept;
+		void FlushDirtyKeyFrameSummaries(uint64_t nowMs);
+		bool KeyFrameEvidenceDirty(uint32_t ssrc) const;
+		KeyFrameSummarySnapshot CurrentKeyFrameSummarySnapshot(uint32_t ssrc) const;
+		void CollectKeyFrameEvidenceSsrcs(absl::flat_hash_set<uint32_t>& ssrcs) const;
 		void EmitTraceEvent(flatbuffers::Offset<FBS::Producer::TraceNotification>& notification) const;
 
 		/* Pure virtual methods inherited from RTC::RtpStreamRecv::Listener. */
@@ -419,6 +455,15 @@ namespace RTC
 		// receive a complete key frame".
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameCompleteAtMs;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameIncompleteAtMs;
+		// Evidence flush timer: a repeating timer that flushes the latest
+		// key frame evidence when a stream stops sending while the producer
+		// stays alive (single-stream video has no RTP-inactivity score event).
+		// It only runs while unsent evidence exists and never influences
+		// scoring or request scheduling.
+		TimerHandle* keyFrameEvidenceTimer{ nullptr };
+		uint64_t keyFrameEvidenceFlushIntervalMs{ 60000u };
+		absl::flat_hash_map<uint32_t, KeyFrameSummarySnapshot> mapSsrcKeyFrameSummarySnapshot;
+		uint64_t keyFrameSummaryEmissions{ 0u };
 		// Viewer-request suppression diagnostics: cumulative count plus a
 		// rate-limited WARN so freeze incidents can prove "viewers asked, the
 		// cadence policy held them back" without flooding the log.
