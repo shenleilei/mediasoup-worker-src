@@ -257,7 +257,10 @@ namespace RTC
 
 		this->shared->channelMessageRegistrator->UnregisterHandler(this->id);
 
-		// Stop the evidence timer before any teardown that could fire it.
+		// Stop the evidence timer and forbid restarts: candidate cleanup below
+		// finalizes incomplete frames, which would otherwise start a new timer
+		// whose callback targets this object after destruction.
+		this->keyFrameEvidenceTimerClosed = true;
 		StopKeyFrameEvidenceTimer();
 
 		// Stop candidate timers before any listener/manager teardown.  This
@@ -1463,7 +1466,9 @@ namespace RTC
 
 	void Producer::StartKeyFrameEvidenceTimerIfNeeded()
 	{
-		if (this->keyFrameEvidenceTimer != nullptr || this->keyFrameEvidenceFlushIntervalMs == 0u)
+		if (
+		  this->keyFrameEvidenceTimerClosed || this->keyFrameEvidenceTimer != nullptr ||
+		  this->keyFrameEvidenceFlushIntervalMs == 0u)
 		{
 			return;
 		}

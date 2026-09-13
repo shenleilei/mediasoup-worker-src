@@ -461,6 +461,10 @@ namespace RTC
 		// It only runs while unsent evidence exists and never influences
 		// scoring or request scheduling.
 		TimerHandle* keyFrameEvidenceTimer{ nullptr };
+		// Set during destruction: candidate cleanup may finalize incomplete
+		// frames and would otherwise restart the evidence timer for an object
+		// that is about to be freed (use-after-free on the timer callback).
+		bool keyFrameEvidenceTimerClosed{ false };
 		uint64_t keyFrameEvidenceFlushIntervalMs{ 60000u };
 		absl::flat_hash_map<uint32_t, KeyFrameSummarySnapshot> mapSsrcKeyFrameSummarySnapshot;
 		uint64_t keyFrameSummaryEmissions{ 0u };

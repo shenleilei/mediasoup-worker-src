@@ -1569,6 +1569,51 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer key frame evidence timer must not restart during destruction",
+  "[producer][keyframe][completeness][evidence][destroy]")
+{
+	REQUIRE(setenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE", "observe", 1) == 0);
+
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+
+	// Inner scope: the producer receives a key frame head without its tail and
+	// is then destroyed with an active candidate.  Destruction finalizes the
+	// candidate as incomplete; the evidence timer must not be restarted for
+	// the dying object, otherwise its callback fires after free once the loop
+	// keeps running below.
+	{
+		const auto* request = BuildProduceRequest(
+		  builder, /*keyFrameRequestDelay=*/0u, /*withPliFeedback=*/true, "video/H264");
+		//Constructed in-place via unique scope below.
+		auto producer = std::make_unique<RTC::Producer>(
+		  &shared, "producer-keyframe-destroy-timer", &listener, request);
+		REQUIRE(producer->testKeyFrameIntegrityObserve());
+		producer->testSetKeyFrameEvidenceFlushIntervalMs(100u);
+
+		H264MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+		CHECK(
+		  producer->ReceiveRtpPacket(start.packet.get()) ==
+		  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+		REQUIRE(producer->testHasKeyFrameCandidate(ProducerSsrc));
+
+		producer.reset();
+	}
+
+	// The producer is gone but the event loop keeps running: any timer that
+	// was (incorrectly) restarted during destruction fires here.  Under
+	// ASan/UBSan this reproduces the use-after-free; in release builds it is
+	// a smoke check.
+	std::this_thread::sleep_for(std::chrono::milliseconds(350u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	unsetenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE");
+}
+
+TEST_CASE(
   "Producer key frame evidence tracks the last complete and incomplete times",
   "[producer][keyframe][completeness][evidence]")
 {
