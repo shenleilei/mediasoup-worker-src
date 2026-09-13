@@ -111,6 +111,16 @@ namespace RTC
 			bool keyFrameTraffic{ false };
 		};
 
+		// First received packet per SSRC (in tracking modes), used to
+		// classify "key frame ended without a credible start" events as
+		// connection-establishment truncation (stream-start window) versus
+		// mid-stream loss.
+		struct KeyFrameFirstReceived
+		{
+			uint16_t firstSeq{ 0u };
+			uint64_t firstAtMs{ 0u };
+		};
+
 		// Snapshot of the summarized evidence state, used to detect changes
 		// since the last emitted summary (the evidence flush timer only logs
 		// when state actually changed).
@@ -277,6 +287,15 @@ namespace RTC
 		bool testKeyFrameNoStartWarned(uint32_t ssrc) const
 		{
 			return this->mapSsrcLastKeyFrameNoStartWarnAtMs.contains(ssrc);
+		}
+		bool testLastKeyFrameNoStartStreamStartWindow(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcLastNoStartStreamStartWindow.find(ssrc);
+			return it != this->mapSsrcLastNoStartStreamStartWindow.end() && it->second;
+		}
+		void testSetKeyFrameStreamStartWindowMs(uint64_t windowMs)
+		{
+			this->keyFrameStreamStartWindowMs = windowMs;
 		}
 		uint64_t testLastKeyFrameCompleteAtMs(uint32_t ssrc) const
 		{
@@ -468,6 +487,13 @@ namespace RTC
 		uint64_t keyFrameEvidenceFlushIntervalMs{ 60000u };
 		absl::flat_hash_map<uint32_t, KeyFrameSummarySnapshot> mapSsrcKeyFrameSummarySnapshot;
 		uint64_t keyFrameSummaryEmissions{ 0u };
+		absl::flat_hash_map<uint32_t, KeyFrameFirstReceived> mapSsrcKeyFrameFirstReceived;
+		// Classification window: a no-start warning inside this window after
+		// the stream's first received packet is a connection-establishment
+		// truncation (benign); outside it is mid-stream loss (incident).
+		uint64_t keyFrameStreamStartWindowMs{ 30000u };
+		// Last no-start classification per SSRC (true = stream-start window).
+		absl::flat_hash_map<uint32_t, bool> mapSsrcLastNoStartStreamStartWindow;
 		// Viewer-request suppression diagnostics: cumulative count plus a
 		// rate-limited WARN so freeze incidents can prove "viewers asked, the
 		// cadence policy held them back" without flooding the log.

@@ -1648,14 +1648,59 @@ namespace RTC
 		}
 
 		this->mapSsrcLastKeyFrameNoStartWarnAtMs[ssrc] = nowMs;
-		MS_EVIDENCE_WARN(
-		  "upstream key frame ended without a credible start [ssrc:%" PRIu32
-		  ", timestamp:%" PRIu32 ", endSeq:%" PRIu16
-		  ", firstSliceHeuristic:%s, reason:first-slice-or-start-packet-lost]",
-		  ssrc,
-		  timestamp,
-		  seq,
-		  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active");
+
+		// Classification: a no-start inside the stream-start window is the
+		// expected connection-establishment truncation (the SFU begins
+		// accepting mid-frame); outside it, the frame start was lost on an
+		// established stream (real uplink-loss candidate).  firstReceivedSeq
+		// and lossDetected make the distinction mechanical:
+		//   - stream-start window + firstSeq in mid-stream range + no
+		//     detected gap => truncation at acceptance;
+		//   - mid-stream + lossDetected => real loss.
+		auto firstIt = this->mapSsrcKeyFrameFirstReceived.find(ssrc);
+		const uint16_t firstSeq  = firstIt != this->mapSsrcKeyFrameFirstReceived.end() ? firstIt->second.firstSeq : 0u;
+		const uint64_t firstAtMs = firstIt != this->mapSsrcKeyFrameFirstReceived.end() ? firstIt->second.firstAtMs : 0u;
+		const bool streamStartWindow =
+		  firstAtMs != 0u && nowMs - firstAtMs < this->keyFrameStreamStartWindowMs;
+		this->mapSsrcLastNoStartStreamStartWindow[ssrc] = streamStartWindow;
+
+		bool lossDetected{ false };
+		auto streamIt = this->mapSsrcRtpStream.find(ssrc);
+		if (streamIt != this->mapSsrcRtpStream.end() && streamIt->second != nullptr)
+		{
+			lossDetected = streamIt->second->GetFractionLost() > 0u;
+		}
+
+		if (streamStartWindow)
+		{
+			MS_EVIDENCE_INFO(
+			  "upstream key frame ended without a credible start [ssrc:%" PRIu32
+			  ", timestamp:%" PRIu32 ", endSeq:%" PRIu16
+			  ", firstReceivedSeq:%" PRIu16 ", firstReceivedAgeMs:%" PRIu64
+			  ", lossDetected:%s, firstSliceHeuristic:%s, reason:stream-start-window]",
+			  ssrc,
+			  timestamp,
+			  seq,
+			  firstSeq,
+			  firstAtMs == 0u ? 0u : nowMs - firstAtMs,
+			  lossDetected ? "true" : "false",
+			  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active");
+		}
+		else
+		{
+			MS_EVIDENCE_WARN(
+			  "upstream key frame ended without a credible start [ssrc:%" PRIu32
+			  ", timestamp:%" PRIu32 ", endSeq:%" PRIu16
+			  ", firstReceivedSeq:%" PRIu16 ", firstReceivedAgeMs:%" PRIu64
+			  ", lossDetected:%s, firstSliceHeuristic:%s, reason:mid-stream-loss]",
+			  ssrc,
+			  timestamp,
+			  seq,
+			  firstSeq,
+			  firstAtMs == 0u ? 0u : nowMs - firstAtMs,
+			  lossDetected ? "true" : "false",
+			  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active");
+		}
 	}
 
 	size_t Producer::CountMissingKeyFramePackets(const KeyFrameCandidate& candidate) const
@@ -1690,6 +1735,15 @@ namespace RTC
 	void Producer::RecordKeyFramePacketHistory(RTC::RtpPacket* packet)
 	{
 		MS_TRACE();
+
+		const uint32_t ssrc = packet->GetSsrc();
+		if (this->mapSsrcKeyFrameFirstReceived.find(ssrc) == this->mapSsrcKeyFrameFirstReceived.end())
+		{
+			KeyFrameFirstReceived first;
+			first.firstSeq  = packet->GetSequenceNumber();
+			first.firstAtMs = DepLibUV::GetTimeMs();
+			this->mapSsrcKeyFrameFirstReceived[ssrc] = first;
+		}
 
 		auto& history = this->mapSsrcKeyFramePacketHistory[packet->GetSsrc()];
 		KeyFrameHistoryPacket historyPacket;
@@ -2096,6 +2150,7 @@ namespace RTC
 		MaybeLogKeyFrameSummary(ssrc, DepLibUV::GetTimeMs(), /*force=*/true);
 		ClearKeyFrameCandidate(ssrc, "stream_rebuilt", /*requestRecovery=*/false);
 		this->mapSsrcKeyFramePacketHistory.erase(ssrc);
+		this->mapSsrcKeyFrameFirstReceived.erase(ssrc);
 		this->keyFrameStartDisabledSsrcs.erase(ssrc);
 
 		// Start the key frame cadence baseline for the new stream.
