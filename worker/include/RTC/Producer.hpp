@@ -244,7 +244,7 @@ namespace RTC
 		void ReceiveRtcpSenderReport(RTC::RTCP::SenderReport* report);
 		void ReceiveRtcpXrDelaySinceLastRr(RTC::RTCP::DelaySinceLastRr::SsrcInfo* ssrcInfo);
 		bool GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs);
-		void RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp);
+		void RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp, bool firstFrameRequest = false);
 
 #ifdef MS_TEST
 		bool testHasKeyFrameCandidate(uint32_t ssrc) const

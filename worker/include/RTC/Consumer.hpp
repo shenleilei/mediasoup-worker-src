@@ -106,7 +106,10 @@ namespace RTC
 			virtual void OnConsumerSendRtpPacket(RTC::Consumer* consumer, RTC::RtpPacket* packet) = 0;
 			virtual void OnConsumerRetransmitRtpPacket(RTC::Consumer* consumer, RTC::RtpPacket* packet) = 0;
 			virtual void OnConsumerKeyFrameRequested(
-			  RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp) = 0;
+			  RTC::Consumer* consumer,
+			  uint32_t mappedSsrc,
+			  bool fromViewerRtcp,
+			  bool firstFrameRequest) = 0;
 			virtual void OnConsumerNeedBitrateChange(RTC::Consumer* consumer)                      = 0;
 			virtual void OnConsumerNeedZeroBitrate(RTC::Consumer* consumer)                        = 0;
 			virtual void OnConsumerProducerClosed(RTC::Consumer* consumer)                         = 0;
@@ -259,7 +262,7 @@ namespace RTC
 		virtual void ReceiveRtcpXrReceiverReferenceTime(RTC::RTCP::ReceiverReferenceTime* report) = 0;
 		virtual uint32_t GetTransmissionRate(uint64_t nowMs)                                      = 0;
 		virtual float GetRtt() const                                                              = 0;
-		virtual void RequestKeyFrame(bool fromViewerRtcp = false)                                 = 0;
+		virtual void RequestKeyFrame(bool fromViewerRtcp = false, bool firstFrameRequest = false) = 0;
 
 		/* Methods inherited from Channel::ChannelSocket::RequestHandler. */
 	public:

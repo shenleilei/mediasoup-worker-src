@@ -72,7 +72,7 @@ namespace RTC
 		void UserOnPaused() override;
 		void UserOnResumed() override;
 		void CreateRtpStream();
-		void RequestKeyFrame(bool fromViewerRtcp = false) override;
+		void RequestKeyFrame(bool fromViewerRtcp = false, bool firstFrameRequest = false) override;
 		void EmitScore() const;
 
 		/* Pure virtual methods inherited from RtpStreamSend::Listener. */
@@ -88,6 +88,10 @@ namespace RTC
 		RTC::RtpStreamRecv* producerRtpStream{ nullptr };
 		bool keyFrameSupported{ false };
 		bool syncRequired{ false };
+			// True once this consumer has forwarded its first key frame; until
+			// then its key frame requests are first-frame requests that bypass
+			// the coalescing delay (a new viewer must not wait out the window).
+			bool firstKeyFrameDelivered{ false };
 		RTC::SeqManager<uint16_t> rtpSeqManager;
 		bool managingBitrate{ false };
 		std::unique_ptr<RTC::Codecs::EncodingContext> encodingContext;

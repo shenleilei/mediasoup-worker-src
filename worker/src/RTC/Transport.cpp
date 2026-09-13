@@ -2728,7 +2728,7 @@ namespace RTC
 	}
 
 	inline void Transport::OnConsumerKeyFrameRequested(
-	  RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp)
+	  RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp, bool firstFrameRequest)
 	{
 		MS_TRACE();
 
@@ -2739,7 +2739,8 @@ namespace RTC
 			return;
 		}
 
-		this->listener->OnTransportConsumerKeyFrameRequested(this, consumer, mappedSsrc, fromViewerRtcp);
+		this->listener->OnTransportConsumerKeyFrameRequested(
+		  this, consumer, mappedSsrc, fromViewerRtcp, firstFrameRequest);
 	}
 
 	inline void Transport::OnConsumerNeedBitrateChange(RTC::Consumer* /*consumer*/)

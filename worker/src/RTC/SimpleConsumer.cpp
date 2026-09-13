@@ -878,6 +878,7 @@ namespace RTC
 			if (packet->IsKeyFrame())
 			{
 				MS_DEBUG_TAG(rtp, "sync key frame received");
+				this->firstKeyFrameDelivered = true;
 			}
 
 			this->rtpSeqManager.Sync(packet->GetSequenceNumber() - 1);
@@ -1216,7 +1217,7 @@ namespace RTC
 		}
 	}
 
-	void SimpleConsumer::RequestKeyFrame(bool fromViewerRtcp)
+	void SimpleConsumer::RequestKeyFrame(bool fromViewerRtcp, bool firstFrameRequest)
 	{
 		MS_TRACE();
 
@@ -1227,7 +1228,12 @@ namespace RTC
 
 		auto mappedSsrc = this->consumableRtpEncodings[0].ssrc;
 
-		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
+		// A request from a consumer that has not yet delivered its first key
+		// frame is a first-frame request regardless of the caller's flag: the
+		// viewer is still waiting to render anything at all.
+		const bool effectiveFirstFrame = firstFrameRequest || !this->firstKeyFrameDelivered;
+
+		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, effectiveFirstFrame);
 	}
 
 	inline void SimpleConsumer::EmitScore() const

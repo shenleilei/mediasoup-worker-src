@@ -576,6 +576,67 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer first-frame key frame requests bypass the coalescing delay",
+  "[producer][keyframe][cadence][first-frame]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/5000u, /*withPliFeedback=*/true, "video/VP8");
+	RTC::Producer producer(&shared, "producer-keyframe-first-frame", &listener, request);
+
+	// A key frame first packet creates the stream (captured by the listener)
+	// without any request.
+	Vp8MediaPacket keyFrame(1u, 90000u, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(keyFrame.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(listener.rtpStreams.size() == 1u);
+	REQUIRE(listener.sentRtcpPackets.size() == 0u);
+
+	// An internal (non-viewer) request is forwarded immediately and records
+	// the send time for the spacing guard.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false);
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
+
+	// A first-frame request within the 1s spacing window is absorbed by the
+	// pending retry instead of sending again: simultaneous consumer creations
+	// cannot burst the publisher.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+
+	// Viewer-originated requests stay suppressed regardless of the
+	// first-frame flag: the anti-storm property for RTCP-driven requests is
+	// unchanged.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+
+	// After the spacing window (with a key frame delivered in between, as in
+	// the real flow), a first-frame request bypasses the open coalescing
+	// window instead of waiting out the 5s delay.
+	std::this_thread::sleep_for(std::chrono::milliseconds(1100u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	Vp8MediaPacket secondKeyFrame(2u, 94500u, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(secondKeyFrame.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	REQUIRE(listener.sentRtcpPackets.size() == 2u);
+
+	// The spacing guard applies again right after the bypass send.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
+
+	// Non-first-frame internal requests remain coalesced: no immediate send
+	// while the delayer window opened by the bypass is pending.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
+}
+
+TEST_CASE(
   "Producer forwards viewer key frame requests when cadence delay is disabled",
   "[producer][keyframe][cadence]")
 {

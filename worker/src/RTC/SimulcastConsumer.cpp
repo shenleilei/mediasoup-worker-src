@@ -1369,18 +1369,18 @@ namespace RTC
 		{
 			auto mappedSsrc = this->consumableRtpEncodings[this->targetSpatialLayer].ssrc;
 
-			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
+			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, /*firstFrameRequest=*/false);
 		}
 
 		if (producerCurrentRtpStream && producerCurrentRtpStream != producerTargetRtpStream)
 		{
 			auto mappedSsrc = this->consumableRtpEncodings[this->currentSpatialLayer].ssrc;
 
-			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
+			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, /*firstFrameRequest=*/false);
 		}
 	}
 
-	void SimulcastConsumer::RequestKeyFrame(bool fromViewerRtcp)
+	void SimulcastConsumer::RequestKeyFrame(bool fromViewerRtcp, bool /*firstFrameRequest*/)
 	{
 		MS_TRACE();
 
@@ -1405,7 +1405,7 @@ namespace RTC
 
 		auto mappedSsrc = this->consumableRtpEncodings[this->targetSpatialLayer].ssrc;
 
-		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, /*fromViewerRtcp=*/false);
+		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/false);
 	}
 
 	void SimulcastConsumer::RequestKeyFrameForCurrentSpatialLayer(bool fromViewerRtcp)
@@ -1426,7 +1426,7 @@ namespace RTC
 
 		auto mappedSsrc = this->consumableRtpEncodings[this->currentSpatialLayer].ssrc;
 
-		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
+		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, /*firstFrameRequest=*/false);
 	}
 
 	void SimulcastConsumer::MayChangeLayers(bool force)

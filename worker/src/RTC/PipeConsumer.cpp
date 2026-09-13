@@ -748,7 +748,7 @@ namespace RTC
 		}
 	}
 
-	void PipeConsumer::RequestKeyFrame(bool fromViewerRtcp)
+	void PipeConsumer::RequestKeyFrame(bool fromViewerRtcp, bool /*firstFrameRequest*/)
 	{
 		MS_TRACE();
 
@@ -761,7 +761,7 @@ namespace RTC
 		{
 			auto mappedSsrc = consumableRtpEncoding.ssrc;
 
-			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
+			this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, /*firstFrameRequest=*/false);
 		}
 	}
 

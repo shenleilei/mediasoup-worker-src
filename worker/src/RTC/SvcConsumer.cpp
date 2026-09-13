@@ -1050,7 +1050,7 @@ namespace RTC
 		}
 	}
 
-	void SvcConsumer::RequestKeyFrame(bool fromViewerRtcp)
+	void SvcConsumer::RequestKeyFrame(bool fromViewerRtcp, bool /*firstFrameRequest*/)
 	{
 		MS_TRACE();
 
@@ -1061,7 +1061,7 @@ namespace RTC
 
 		auto mappedSsrc = this->consumableRtpEncodings[0].ssrc;
 
-		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp);
+		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, /*firstFrameRequest=*/false);
 	}
 
 	void SvcConsumer::MayChangeLayers(bool force)

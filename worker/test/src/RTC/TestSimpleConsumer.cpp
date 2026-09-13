@@ -410,7 +410,10 @@ namespace
 		}
 
 		void OnConsumerKeyFrameRequested(
-		  RTC::Consumer* /*consumer*/, uint32_t /*mappedSsrc*/, bool fromViewerRtcp) override
+		  RTC::Consumer* /*consumer*/,
+		  uint32_t /*mappedSsrc*/,
+		  bool fromViewerRtcp,
+		  bool /*firstFrameRequest*/) override
 		{
 			++this->keyFrameRequests;
 

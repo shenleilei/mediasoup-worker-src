@@ -1026,7 +1026,11 @@ namespace RTC
 	}
 
 	inline void Router::OnTransportConsumerKeyFrameRequested(
-	  RTC::Transport* /*transport*/, RTC::Consumer* consumer, uint32_t mappedSsrc, bool fromViewerRtcp)
+	  RTC::Transport* /*transport*/,
+	  RTC::Consumer* consumer,
+	  uint32_t mappedSsrc,
+	  bool fromViewerRtcp,
+	  bool firstFrameRequest)
 	{
 		MS_TRACE();
 
@@ -1046,7 +1050,7 @@ namespace RTC
 		  producer->id.c_str(),
 		  mappedSsrc);
 
-		producer->RequestKeyFrame(mappedSsrc, fromViewerRtcp);
+		producer->RequestKeyFrame(mappedSsrc, fromViewerRtcp, firstFrameRequest);
 	}
 
 	inline void Router::OnTransportNewDataProducer(

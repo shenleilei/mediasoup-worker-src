@@ -24,6 +24,9 @@ namespace RTC
 
 	static constexpr unsigned int SendNackDelay{ 10u }; // In ms.
 	static constexpr uint64_t KeyFrameCandidateTimeoutMs{ 500u };
+	// Minimum spacing between first-frame bypass sends so simultaneous
+	// consumer creations cannot burst the publisher.
+	static constexpr uint64_t KeyFrameFirstFrameRequestSpacingMs{ 1000u };
 	// Production-visible evidence cadence (worker INFO): one summary per SSRC
 	// per interval; bounded missing-sequence list on incomplete WARNs.
 	static constexpr uint64_t KeyFrameSummaryIntervalMs{ 60000u };
@@ -906,7 +909,7 @@ namespace RTC
 		return true;
 	}
 
-	void Producer::RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp)
+	void Producer::RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp, bool firstFrameRequest)
 	{
 		MS_TRACE();
 
@@ -948,6 +951,53 @@ namespace RTC
 				  this->id.c_str(),
 				  mappedSsrc,
 				  this->suppressedViewerKeyFrameRequests);
+			}
+
+			return;
+		}
+
+		// First-frame requests (a consumer that has not yet delivered any key
+		// frame) bypass the coalescing delay: a new viewer must not wait out
+		// the window before rendering anything.  A 1s send-spacing guard keeps
+		// simultaneous joins from turning into a request burst; the pending
+		// retry timer covers the remainder.
+		if (firstFrameRequest && !fromViewerRtcp)
+		{
+			uint32_t firstFrameSsrc{ 0u };
+			auto mappedIt = this->mapMappedSsrcSsrc.find(mappedSsrc);
+
+			if (mappedIt != this->mapMappedSsrcSsrc.end())
+			{
+				firstFrameSsrc = mappedIt->second;
+			}
+			else
+			{
+				for (const auto& encodingMapping : this->rtpMapping.encodings)
+				{
+					if (encodingMapping.mappedSsrc == mappedSsrc && encodingMapping.ssrc != 0u)
+					{
+						firstFrameSsrc = encodingMapping.ssrc;
+						break;
+					}
+				}
+			}
+
+			if (firstFrameSsrc != 0u)
+			{
+				const uint64_t nowMs = DepLibUV::GetTimeMs();
+				auto lastSentIt      = this->mapSsrcLastKeyFrameRequestAtMs.find(firstFrameSsrc);
+				const bool recentlySent =
+				  lastSentIt != this->mapSsrcLastKeyFrameRequestAtMs.end() &&
+				  nowMs - lastSentIt->second < KeyFrameFirstFrameRequestSpacingMs;
+
+				if (!recentlySent)
+				{
+					MS_DEBUG_DEV(
+					  "producer first-frame key frame request bypassing coalescing delay [producerId:%s, ssrc:%" PRIu32 "]",
+					  this->id.c_str(),
+					  firstFrameSsrc);
+					this->keyFrameRequestManager->ForceKeyFrameNeeded(firstFrameSsrc);
+				}
 			}
 
 			return;
