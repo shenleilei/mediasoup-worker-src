@@ -225,6 +225,97 @@ public:
 	} \
 	while (false)
 
+// Production-visible evidence channel: gated ONLY by the log level, never by
+// logTags.  Use sparingly for incident evidence that must survive default
+// deployments (key frame integrity, kick execution, ...).
+#define MS_EVIDENCE_INFO(desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_INFO) \
+		{ \
+			const int loggerWritten = std::snprintf(Logger::buffer, Logger::BufferSize, "I" _MS_LOG_STR_DESC desc, _MS_LOG_ARG, ##__VA_ARGS__); \
+			Logger::channel->SendLog(Logger::buffer, static_cast<uint32_t>(loggerWritten)); \
+		} \
+	} \
+	while (false)
+
+#define MS_EVIDENCE_INFO_STD(desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_INFO) \
+		{ \
+			std::fprintf(stdout, "[info] " _MS_LOG_STR_DESC desc _MS_LOG_SEPARATOR_CHAR_STD, _MS_LOG_ARG, ##__VA_ARGS__); \
+			std::fflush(stdout); \
+		} \
+	} \
+	while (false)
+
+#define MS_EVIDENCE_WARN(desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_WARN) \
+		{ \
+			const int loggerWritten = std::snprintf(Logger::buffer, Logger::BufferSize, "W" _MS_LOG_STR_DESC desc, _MS_LOG_ARG, ##__VA_ARGS__); \
+			Logger::channel->SendLog(Logger::buffer, static_cast<uint32_t>(loggerWritten)); \
+		} \
+	} \
+	while (false)
+
+#define MS_EVIDENCE_WARN_STD(desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_WARN) \
+		{ \
+			std::fprintf(stderr, "[warn] " _MS_LOG_STR_DESC desc _MS_LOG_SEPARATOR_CHAR_STD, _MS_LOG_ARG, ##__VA_ARGS__); \
+			std::fflush(stderr); \
+		} \
+	} \
+	while (false)
+
+#define MS_INFO_TAG(tag, desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_INFO && _MS_TAG_ENABLED(tag)) \
+		{ \
+			const int loggerWritten = std::snprintf(Logger::buffer, Logger::BufferSize, "I" _MS_LOG_STR_DESC desc, _MS_LOG_ARG, ##__VA_ARGS__); \
+			Logger::channel->SendLog(Logger::buffer, static_cast<uint32_t>(loggerWritten)); \
+		} \
+	} \
+	while (false)
+
+#define MS_INFO_TAG_STD(tag, desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_INFO && _MS_TAG_ENABLED(tag)) \
+		{ \
+			std::fprintf(stdout, "[info] " _MS_LOG_STR_DESC desc _MS_LOG_SEPARATOR_CHAR_STD, _MS_LOG_ARG, ##__VA_ARGS__); \
+			std::fflush(stdout); \
+		} \
+	} \
+	while (false)
+
+#define MS_INFO_2TAGS(tag1, tag2, desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_INFO && _MS_TAG_ENABLED_2(tag1, tag2)) \
+		{ \
+			const int loggerWritten = std::snprintf(Logger::buffer, Logger::BufferSize, "I" _MS_LOG_STR_DESC desc, _MS_LOG_ARG, ##__VA_ARGS__); \
+			Logger::channel->SendLog(Logger::buffer, static_cast<uint32_t>(loggerWritten)); \
+		} \
+	} \
+	while (false)
+
+#define MS_INFO_2TAGS_STD(tag1, tag2, desc, ...) \
+	do \
+	{ \
+		if (Settings::configuration.logLevel >= LogLevel::LOG_INFO && _MS_TAG_ENABLED_2(tag1, tag2)) \
+		{ \
+			std::fprintf(stdout, "[info] " _MS_LOG_STR_DESC desc _MS_LOG_SEPARATOR_CHAR_STD, _MS_LOG_ARG, ##__VA_ARGS__); \
+			std::fflush(stdout); \
+		} \
+	} \
+	while (false)
+
 #define MS_WARN_TAG(tag, desc, ...) \
 	do \
 	{ \
@@ -450,6 +541,12 @@ public:
 	#define MS_TRACE MS_TRACE_STD
 	#undef MS_DEBUG_TAG
 	#define MS_DEBUG_TAG MS_DEBUG_TAG_STD
+	#undef MS_INFO_TAG
+	#define MS_INFO_TAG MS_INFO_TAG_STD
+	#undef MS_EVIDENCE_INFO
+	#define MS_EVIDENCE_INFO MS_EVIDENCE_INFO_STD
+	#undef MS_EVIDENCE_WARN
+	#define MS_EVIDENCE_WARN MS_EVIDENCE_WARN_STD
 	#undef MS_WARN_TAG
 	#define MS_WARN_TAG MS_WARN_TAG_STD
 	#undef MS_DEBUG_2TAGS

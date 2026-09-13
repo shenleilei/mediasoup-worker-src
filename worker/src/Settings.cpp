@@ -28,6 +28,7 @@ thread_local struct Settings::Configuration Settings::configuration;
 absl::flat_hash_map<std::string, LogLevel> Settings::String2LogLevel =
 {
 	{ "debug", LogLevel::LOG_DEBUG },
+	{ "info",  LogLevel::LOG_INFO  },
 	{ "warn",  LogLevel::LOG_WARN  },
 	{ "error", LogLevel::LOG_ERROR },
 	{ "none",  LogLevel::LOG_NONE  }
@@ -35,6 +36,7 @@ absl::flat_hash_map<std::string, LogLevel> Settings::String2LogLevel =
 absl::flat_hash_map<LogLevel, std::string> Settings::LogLevel2String =
 {
 	{ LogLevel::LOG_DEBUG, "debug" },
+	{ LogLevel::LOG_INFO,  "info"  },
 	{ LogLevel::LOG_WARN,  "warn"  },
 	{ LogLevel::LOG_ERROR, "error" },
 	{ LogLevel::LOG_NONE,  "none"  }

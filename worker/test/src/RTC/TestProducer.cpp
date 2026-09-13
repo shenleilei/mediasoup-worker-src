@@ -280,13 +280,15 @@ namespace
 		  bool fragmentEnd,
 		  bool marker,
 		  bool frameMarking = false,
-		  bool firstMb0 = false)
+		  bool firstMb0 = false,
+		  uint8_t nalType = 5u)
 		{
 			this->buffer[0] = 0x80u;
 			this->buffer[1] = PayloadType;
-			// H264 FU-A: NAL type 28, FU header with S/E and IDR NAL type 5.
+			// H264 FU-A: NAL type 28, FU header with S/E and the original
+			// NAL type (5 = IDR, 1 = non-IDR slice).
 			this->buffer[12] = 28u;
-			uint8_t fuHeader = 5u;
+			uint8_t fuHeader = nalType;
 			if (fragmentStart)
 			{
 				fuHeader |= 0x80u;
@@ -1340,7 +1342,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "Producer key frame integrity observe mode logs evidence without changing request scheduling",
+  "Producer key frame integrity observe mode preserves legacy pending clearing",
   "[producer][keyframe][completeness][observe]")
 {
 	REQUIRE(setenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE", "observe", 1) == 0);
@@ -1349,14 +1351,66 @@ TEST_CASE(
 	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
 	TestProducerListener listener;
 	flatbuffers::FlatBufferBuilder builder;
-	// Delay > 0 with observe mode: tracking runs, but complete/incomplete must
-	// not clear pending state, refresh the cadence baseline or request recovery.
+	// Legacy mode (delay 0) plus observation.  The regression this guards:
+	// observation must not displace the legacy per-key-frame receipt handling
+	// that clears the request manager's pending state.  Otherwise a forced
+	// new-stream request would be re-sent after the 1s retry timer even
+	// though the key frame arrived.
 	const auto* request = BuildProduceRequest(
-	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
-	RTC::Producer producer(&shared, "producer-keyframe-observe", &listener, request);
+	  builder, /*keyFrameRequestDelay=*/0u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-observe-legacy", &listener, request);
 	REQUIRE(producer.testKeyFrameIntegrityObserve());
 
-	// Complete key frame: evidence is counted but no request bookkeeping runs.
+	// First packet on a new stream is a delta frame: the producer forces a
+	// key frame request (one PLI, pending state created).
+	H264MediaPacket deltaFirst(1u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/false, /*nalType=*/1u);
+	CHECK(
+	  producer.ReceiveRtpPacket(deltaFirst.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(listener.rtpStreams.size() == 1u);
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
+
+	// A complete key frame arrives.  The legacy path must clear the pending
+	// request, and observation must record the complete frame.
+	H264MediaPacket idrStart(2u, 94500u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(idrStart.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H264MediaPacket idrTail(3u, 94500u, false, true, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(idrTail.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+
+	// Wait past the 1s pending retry timer: no re-request may be sent.
+	std::this_thread::sleep_for(std::chrono::milliseconds(1200u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+
+	unsetenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE");
+}
+
+TEST_CASE(
+  "Producer key frame integrity observe mode preserves cadence recovery requests",
+  "[producer][keyframe][completeness][observe]")
+{
+	REQUIRE(setenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE", "observe", 1) == 0);
+
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	// Cadence mode (delay > 0) plus observation: scheduling behavior must be
+	// identical to cadence mode without observation.  Observation only adds
+	// evidence; it must neither suppress nor add requests.
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
+	RTC::Producer producer(&shared, "producer-keyframe-observe-cadence", &listener, request);
+	REQUIRE(producer.testKeyFrameIntegrityObserve());
+
+	// Complete key frame: evidence is counted.
 	H265MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
 	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 	H265MediaPacket tail(101u, 90000u, false, true, true);
@@ -1365,7 +1419,8 @@ TEST_CASE(
 	CHECK(listener.sentRtcpPackets.empty());
 
 	// Incomplete key frame (tail lost): the timeout classifies it incomplete
-	// but must NOT emit a recovery PLI in observe mode.
+	// and cadence-mode recovery still requests exactly once, as without
+	// observation.
 	H265MediaPacket lostStart(200u, 91000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
 	CHECK(
 	  producer.ReceiveRtpPacket(lostStart.packet.get()) ==
@@ -1380,9 +1435,83 @@ TEST_CASE(
 	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
 
 	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 1u);
-	CHECK(listener.sentRtcpPackets.empty());
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
 
 	unsetenv("MEDIASOUP_VIDEO_KEY_FRAME_INTEGRITY_MODE");
+}
+
+TEST_CASE(
+  "Producer key frame tracker warns when a FU-fragmented key frame loses its first slice",
+  "[producer][keyframe][completeness][h264][first-slice][no-start]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H264");
+	RTC::Producer producer(&shared, "producer-keyframe-h264-no-start", &listener, request);
+
+	// Slice 1 (first_mb == 0) is lost.  Slice 2 arrives as a FU start (key
+	// frame NAL traffic, no marker) and the frame ends on a marker packet
+	// that itself is NOT key-frame marked.
+	H264MediaPacket slice2Start(101u, 90000u, true, false, false, /*frameMarking=*/false, /*firstMb0=*/false);
+	CHECK(
+	  producer.ReceiveRtpPacket(slice2Start.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(slice2Start.packet->IsKeyFrame());
+	REQUIRE_FALSE(slice2Start.packet->HasMarker());
+
+	H264MediaPacket tail(103u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(tail.packet->HasMarker());
+	REQUIRE_FALSE(tail.packet->IsKeyFrame());
+
+	// No candidate may start, and the per-timestamp key frame traffic must
+	// make the missing start observable.
+	CHECK_FALSE(producer.testHasKeyFrameCandidate(ProducerSsrc));
+	CHECK(producer.testSawKeyFrameTraffic(ProducerSsrc, 90000u));
+	CHECK(producer.testKeyFrameNoStartWarned(ProducerSsrc));
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 0u);
+}
+
+TEST_CASE(
+  "Producer key frame evidence tracks the last complete and incomplete times",
+  "[producer][keyframe][completeness][evidence]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/400u, /*withPliFeedback=*/true, "video/H265");
+	RTC::Producer producer(&shared, "producer-keyframe-evidence-times", &listener, request);
+
+	REQUIRE(producer.testLastKeyFrameCompleteAtMs(ProducerSsrc) == 0u);
+	REQUIRE(producer.testLastKeyFrameIncompleteAtMs(ProducerSsrc) == 0u);
+
+	H265MediaPacket start(100u, 90000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
+	CHECK(producer.ReceiveRtpPacket(start.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	H265MediaPacket tail(101u, 90000u, false, true, true);
+	CHECK(producer.ReceiveRtpPacket(tail.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	CHECK(producer.testCompleteKeyFrameCount(ProducerSsrc) == 1u);
+	REQUIRE(producer.testLastKeyFrameCompleteAtMs(ProducerSsrc) != 0u);
+
+	// An incomplete frame (tail lost) records the incomplete time.
+	H265MediaPacket lostStart(200u, 91000u, true, false, false, /*frameMarking=*/false, /*firstSlice=*/true);
+	CHECK(
+	  producer.ReceiveRtpPacket(lostStart.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(550u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	CHECK(producer.testIncompleteKeyFrameCount(ProducerSsrc) == 1u);
+	REQUIRE(producer.testLastKeyFrameIncompleteAtMs(ProducerSsrc) != 0u);
+	REQUIRE(
+	  producer.testLastKeyFrameIncompleteAtMs(ProducerSsrc) >=
+	  producer.testLastKeyFrameCompleteAtMs(ProducerSsrc));
 }
 
 TEST_CASE(

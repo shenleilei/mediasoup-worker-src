@@ -42,8 +42,11 @@ namespace RTC
 				// heuristic: it identifies the first slice in decoding order only
 				// for streams that do not use FMO (multiple slice groups) or
 				// arbitrary slice order.  Producer keeps a runtime violation
-				// detector (two first-slice markers within one picture) and
-				// disables the heuristic per SSRC when it fires.
+				// detector (two first-slice markers within one picture) that
+				// disables the heuristic per SSRC when it fires.  NOTE: the
+				// detector is a mitigation, not a proof — absence of a conflict
+				// does NOT confirm the no-FMO/no-ASO precondition holds; it only
+				// means no contradicting evidence was observed on this stream.
 				bool isFirstSliceOfPicture{ false };
 				// True when the slice header was present and readable in this
 				// packet.  A false flag from a readable header is credible

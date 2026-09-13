@@ -24,6 +24,11 @@ namespace RTC
 
 	static constexpr unsigned int SendNackDelay{ 10u }; // In ms.
 	static constexpr uint64_t KeyFrameCandidateTimeoutMs{ 500u };
+	// Production-visible evidence cadence (worker INFO): one summary per SSRC
+	// per interval; bounded missing-sequence list on incomplete WARNs.
+	static constexpr uint64_t KeyFrameSummaryIntervalMs{ 60000u };
+	static constexpr uint64_t KeyFrameNoStartWarnIntervalMs{ 30000u };
+	static constexpr size_t KeyFrameMissingSeqListMax{ 16u };
 
 	// Observation-only key frame integrity mode.  Parsed per producer
 	// construction (one getenv per producer, negligible) so tests can toggle
@@ -52,8 +57,7 @@ namespace RTC
 		{
 			this->keyFrameIntegrityObserve = true;
 
-			MS_DEBUG_2TAGS(
-			  rtp, rtcp,
+			MS_EVIDENCE_INFO(
 			  "video key frame integrity observation enabled [producerId:%s, keyFrameRequestDelay:%" PRIu32
 			  ", mode:observe]",
 			  id.c_str(),
@@ -252,6 +256,29 @@ namespace RTC
 		MS_TRACE();
 
 		this->shared->channelMessageRegistrator->UnregisterHandler(this->id);
+
+		// Final evidence dump: a closed producer cannot emit later summaries,
+		// so the last observed state must be flushed now.
+		{
+			absl::flat_hash_set<uint32_t> evidenceSsrcs;
+			for (const auto& kv : this->mapSsrcCompleteKeyFrames)
+			{
+				evidenceSsrcs.insert(kv.first);
+			}
+			for (const auto& kv : this->mapSsrcIncompleteKeyFrames)
+			{
+				evidenceSsrcs.insert(kv.first);
+			}
+			for (const auto ssrc : this->keyFrameStartDisabledSsrcs)
+			{
+				evidenceSsrcs.insert(ssrc);
+			}
+			const uint64_t nowMs = DepLibUV::GetTimeMs();
+			for (const auto ssrc : evidenceSsrcs)
+			{
+				MaybeLogKeyFrameSummary(ssrc, nowMs, /*force=*/true);
+			}
+		}
 
 		// Stop candidate timers before any listener/manager teardown.
 		ClearKeyFrameCandidates("producer_closed", /*requestRecovery=*/false);
@@ -681,10 +708,10 @@ namespace RTC
 		// mode (delay 0) intentionally keeps the historical first-fragment
 		// behavior.
 		KeyFrameTrackResult keyFrameTrackResult{ KeyFrameTrackResult::IGNORED };
+		const bool cadenceTracking =
+		  this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager != nullptr;
 
-		const bool trackUpstreamKeyFrames = this->keyFrameIntegrityObserve ||
-		                                    (this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager);
-		if (trackUpstreamKeyFrames)
+		if (cadenceTracking)
 		{
 			RecordKeyFramePacketHistory(packet);
 			keyFrameTrackResult = TrackUpstreamKeyFramePacket(packet, isRtx, nowMs);
@@ -705,6 +732,18 @@ namespace RTC
 
 			// A received key frame refreshes the cadence baseline.
 			MarkKeyFrameCadenceBaseline(packet->GetSsrc(), nowMs);
+		}
+
+		// Observation-only bypass for legacy mode (delay 0): track key frame
+		// candidates without touching request scheduling.  The legacy
+		// KeyFrameReceived/baseline handling above must keep running unchanged;
+		// FinalizeKeyFrameCandidate enforces nothing in legacy mode.  In
+		// cadence mode (delay > 0) tracking already ran above, so observation
+		// adds nothing here.
+		if (this->keyFrameIntegrityObserve && !cadenceTracking)
+		{
+			RecordKeyFramePacketHistory(packet);
+			keyFrameTrackResult = TrackUpstreamKeyFramePacket(packet, isRtx, nowMs);
 		}
 
 		if (
@@ -1093,8 +1132,7 @@ namespace RTC
 				// already recorded sequence number is a harmless duplicate.
 				if (packet->IsFrameStartFromSliceHeader() && !isRtx && !duplicateSeq)
 				{
-					MS_WARN_2TAGS(
-					  rtp, rtcp,
+					MS_EVIDENCE_WARN(
 					  "upstream key frame start conflict, first-slice heuristic disabled for stream [ssrc:%" PRIu32
 					  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 "]",
 					  ssrc,
@@ -1111,6 +1149,16 @@ namespace RTC
 		auto ssrcIt = this->mapSsrcKeyFrameCandidates.find(ssrc);
 		if (ssrcIt == this->mapSsrcKeyFrameCandidates.end())
 		{
+			// A frame end for a picture with key-frame NAL traffic but no
+			// candidate means the credible start (first slice / start packet)
+			// never arrived.  FU-fragmented frames split IsKeyFrame and the
+			// marker across different packets, so the decision uses the
+			// per-timestamp history instead of the current packet alone.
+			if (packet->HasMarker() && SawKeyFrameTrafficForTimestamp(ssrc, packet->GetTimestamp()))
+			{
+				WarnKeyFrameEndWithoutStart(ssrc, packet->GetTimestamp(), packet->GetSequenceNumber(), nowMs);
+			}
+
 			return KeyFrameTrackResult::IGNORED;
 		}
 
@@ -1119,6 +1167,11 @@ namespace RTC
 		{
 			// No candidate for this timestamp.  Leave older candidates active and
 			// let the cadence watchdog inspect ordinary non-key-frame traffic.
+			if (packet->HasMarker() && SawKeyFrameTrafficForTimestamp(ssrc, packet->GetTimestamp()))
+			{
+				WarnKeyFrameEndWithoutStart(ssrc, packet->GetTimestamp(), packet->GetSequenceNumber(), nowMs);
+			}
+
 			return KeyFrameTrackResult::IGNORED;
 		}
 
@@ -1225,6 +1278,38 @@ namespace RTC
 		const size_t missingPackets = hasEnd ? CountMissingKeyFramePackets(*candidate) : 0u;
 		const size_t repairedPackets = candidate->repairedPackets;
 		const uint64_t waitedMs = nowMs - candidate->startedAtMs;
+		// Capture the bounded missing-sequence list while the candidate is
+		// still alive; it is emitted with the incomplete evidence below.
+		std::string missingSeqList;
+		size_t listedMissing{ 0u };
+		if (hasEnd)
+		{
+			for (uint16_t seq = candidate->startSeq;
+			     seq != candidate->endSeq && listedMissing < KeyFrameMissingSeqListMax;
+			     ++seq)
+			{
+				if (candidate->receivedSeqs.count(seq) == 0u)
+				{
+					if (!missingSeqList.empty())
+					{
+						missingSeqList += ",";
+					}
+					missingSeqList += std::to_string(seq);
+					++listedMissing;
+				}
+			}
+			if (
+				listedMissing < KeyFrameMissingSeqListMax &&
+				candidate->receivedSeqs.count(candidate->endSeq) == 0u)
+			{
+				if (!missingSeqList.empty())
+				{
+					missingSeqList += ",";
+				}
+				missingSeqList += std::to_string(candidate->endSeq);
+				++listedMissing;
+			}
+		}
 
 		auto latestStartedIt = this->mapSsrcLatestKeyFrameStartedTimestamp.find(ssrc);
 		const bool isLatestStarted =
@@ -1249,12 +1334,15 @@ namespace RTC
 		if (complete)
 		{
 			++this->mapSsrcCompleteKeyFrames[ssrc];
+			this->mapSsrcLastKeyFrameCompleteAtMs[ssrc] = nowMs;
 
 			// Only the newest started candidate may clear pending state or refresh
 			// the cadence baseline.  An older candidate completing after a newer
 			// frame started is evidence, but it must not override the newer frame.
-			// Observation mode never lets results change request scheduling.
-			if (isLatestStarted && !this->keyFrameIntegrityObserve && this->keyFrameRequestManager)
+			// Enforcement is gated on cadence mode exactly like the original
+			// reachability: observation must not add or remove scheduling
+			// effects (legacy mode keeps its per-key-frame handling above).
+			if (isLatestStarted && this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager)
 			{
 				this->keyFrameRequestManager->KeyFrameReceived(ssrc);
 				MarkKeyFrameCadenceBaseline(ssrc, nowMs);
@@ -1274,18 +1362,20 @@ namespace RTC
 			  isLatestStarted ? "true" : "false");
 			(void)requestRecovery;
 
+			MaybeLogKeyFrameSummary(ssrc, nowMs);
+
 			return;
 		}
 
 		++this->mapSsrcIncompleteKeyFrames[ssrc];
+		this->mapSsrcLastKeyFrameIncompleteAtMs[ssrc] = nowMs;
 
 		if (std::string_view(reason) == "timeout")
 		{
-			MS_WARN_2TAGS(
-			  rtp, rtcp,
+			MS_EVIDENCE_WARN(
 			  "upstream key frame incomplete [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
-			  ", hasEnd:%s, missingPackets:%zu, repairedPackets:%zu, waitedMs:%" PRIu64
+			  ", hasEnd:%s, missingPackets:%zu, missingSeqs:%s, repairedPackets:%zu, waitedMs:%" PRIu64
 			  ", latest:%s, reason:%s]",
 			  ssrc,
 			  timestamp,
@@ -1293,6 +1383,7 @@ namespace RTC
 			  endSeq,
 			  hasEnd ? "true" : "false",
 			  missingPackets,
+			  missingSeqList.empty() ? "-" : missingSeqList.c_str(),
 			  repairedPackets,
 			  waitedMs,
 			  isLatestStarted ? "true" : "false",
@@ -1304,7 +1395,7 @@ namespace RTC
 			  rtp, rtcp,
 			  "upstream key frame incomplete [ssrc:%" PRIu32
 			  ", timestamp:%" PRIu32 ", startSeq:%" PRIu16 ", endSeq:%" PRIu16
-			  ", hasEnd:%s, missingPackets:%zu, repairedPackets:%zu, waitedMs:%" PRIu64
+			  ", hasEnd:%s, missingPackets:%zu, missingSeqs:%s, repairedPackets:%zu, waitedMs:%" PRIu64
 			  ", latest:%s, reason:%s]",
 			  ssrc,
 			  timestamp,
@@ -1312,16 +1403,20 @@ namespace RTC
 			  endSeq,
 			  hasEnd ? "true" : "false",
 			  missingPackets,
+			  missingSeqList.empty() ? "-" : missingSeqList.c_str(),
 			  repairedPackets,
 			  waitedMs,
 			  isLatestStarted ? "true" : "false",
 			  reason);
 		}
 
+		MaybeLogKeyFrameSummary(ssrc, nowMs);
+
 		// Only the newest candidate may request recovery.  Old candidates may
 		// still time out after a newer frame started; they must not trigger an
-		// additional publisher request.  Observation mode never requests.
-		if (isLatestStarted && requestRecovery && !this->keyFrameIntegrityObserve && this->keyFrameRequestManager)
+		// additional publisher request.  Cadence-mode gating preserves the
+		// original scheduling; legacy observation never requests.
+		if (isLatestStarted && requestRecovery && this->keyFrameRequestDelay > 0u && this->keyFrameRequestManager)
 		{
 			this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
 		}
@@ -1356,6 +1451,97 @@ namespace RTC
 		}
 
 		return candidate.receivedSeqs.count(candidate.endSeq) != 0u;
+	}
+
+	void Producer::MaybeLogKeyFrameSummary(uint32_t ssrc, uint64_t nowMs, bool force)
+	{
+		if (!force)
+		{
+			auto it = this->mapSsrcLastKeyFrameSummaryAtMs.find(ssrc);
+			if (it != this->mapSsrcLastKeyFrameSummaryAtMs.end() &&
+			    nowMs - it->second < KeyFrameSummaryIntervalMs)
+			{
+				return;
+			}
+		}
+
+		const uint64_t complete =
+		  this->mapSsrcCompleteKeyFrames.count(ssrc) != 0u ? this->mapSsrcCompleteKeyFrames[ssrc] : 0u;
+		const uint64_t incomplete =
+		  this->mapSsrcIncompleteKeyFrames.count(ssrc) != 0u ? this->mapSsrcIncompleteKeyFrames[ssrc] : 0u;
+		const bool heuristicDisabled = this->keyFrameStartDisabledSsrcs.contains(ssrc);
+
+		// Only emit once there is something to report; an idle stream should
+		// not produce periodic empty summaries.
+		if (complete == 0u && incomplete == 0u && !heuristicDisabled)
+		{
+			return;
+		}
+
+		this->mapSsrcLastKeyFrameSummaryAtMs[ssrc] = nowMs;
+
+		auto completeIt = this->mapSsrcLastKeyFrameCompleteAtMs.find(ssrc);
+		auto incompleteIt = this->mapSsrcLastKeyFrameIncompleteAtMs.find(ssrc);
+		const uint64_t lastCompleteAtMs =
+		  completeIt != this->mapSsrcLastKeyFrameCompleteAtMs.end() ? completeIt->second : 0u;
+		const uint64_t lastIncompleteAtMs =
+		  incompleteIt != this->mapSsrcLastKeyFrameIncompleteAtMs.end() ? incompleteIt->second : 0u;
+
+		MS_EVIDENCE_INFO(
+		  "upstream key frame integrity summary [ssrc:%" PRIu32
+		  ", complete:%" PRIu64 ", incomplete:%" PRIu64
+		  ", lastCompleteAtMs:%" PRIu64 ", lastCompleteAgeMs:%" PRIu64
+		  ", lastIncompleteAtMs:%" PRIu64 ", lastIncompleteAgeMs:%" PRIu64
+		  ", firstSliceHeuristic:%s, mode:%s, reason:%s]",
+		  ssrc,
+		  complete,
+		  incomplete,
+		  lastCompleteAtMs,
+		  lastCompleteAtMs == 0u ? 0u : nowMs - lastCompleteAtMs,
+		  lastIncompleteAtMs,
+		  lastIncompleteAtMs == 0u ? 0u : nowMs - lastIncompleteAtMs,
+		  heuristicDisabled ? "disabled" : "active",
+		  this->keyFrameIntegrityObserve ? "observe" : "cadence",
+		  force ? "forced" : "interval");
+	}
+
+	bool Producer::SawKeyFrameTrafficForTimestamp(uint32_t ssrc, uint32_t timestamp) const
+	{
+		auto historyIt = this->mapSsrcKeyFramePacketHistory.find(ssrc);
+		if (historyIt == this->mapSsrcKeyFramePacketHistory.end())
+		{
+			return false;
+		}
+
+		for (const auto& kv : historyIt->second.packets)
+		{
+			if (kv.second.timestamp == timestamp && kv.second.keyFrameTraffic)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void Producer::WarnKeyFrameEndWithoutStart(uint32_t ssrc, uint32_t timestamp, uint16_t seq, uint64_t nowMs)
+	{
+		auto it = this->mapSsrcLastKeyFrameNoStartWarnAtMs.find(ssrc);
+		if (it != this->mapSsrcLastKeyFrameNoStartWarnAtMs.end() &&
+		    nowMs - it->second < KeyFrameNoStartWarnIntervalMs)
+		{
+			return;
+		}
+
+		this->mapSsrcLastKeyFrameNoStartWarnAtMs[ssrc] = nowMs;
+		MS_EVIDENCE_WARN(
+		  "upstream key frame ended without a credible start [ssrc:%" PRIu32
+		  ", timestamp:%" PRIu32 ", endSeq:%" PRIu16
+		  ", firstSliceHeuristic:%s, reason:first-slice-or-start-packet-lost]",
+		  ssrc,
+		  timestamp,
+		  seq,
+		  this->keyFrameStartDisabledSsrcs.contains(ssrc) ? "disabled" : "active");
 	}
 
 	size_t Producer::CountMissingKeyFramePackets(const KeyFrameCandidate& candidate) const
@@ -1393,9 +1579,10 @@ namespace RTC
 
 		auto& history = this->mapSsrcKeyFramePacketHistory[packet->GetSsrc()];
 		KeyFrameHistoryPacket historyPacket;
-		historyPacket.timestamp = packet->GetTimestamp();
-		historyPacket.frameEnd  = packet->IsFrameEnd(packet->HasMarker());
-		historyPacket.marker    = packet->HasMarker();
+		historyPacket.timestamp       = packet->GetTimestamp();
+		historyPacket.frameEnd        = packet->IsFrameEnd(packet->HasMarker());
+		historyPacket.marker          = packet->HasMarker();
+		historyPacket.keyFrameTraffic = packet->IsKeyFrame();
 		history.packets[packet->GetSequenceNumber()] = historyPacket;
 
 		if (!history.started || RTC::SeqManager<uint16_t>::IsSeqHigherThan(packet->GetSequenceNumber(), history.newestSeq))
@@ -1790,7 +1977,9 @@ namespace RTC
 		this->rtpStreamByEncodingIdx[encodingIdx] = rtpStream;
 		this->rtpStreamScores[encodingIdx]        = rtpStream->GetScore();
 
-		// A stream rebuild invalidates receipt evidence from the old generation.
+		// A stream rebuild invalidates receipt evidence from the old generation;
+		// flush the final state of the old generation first.
+		MaybeLogKeyFrameSummary(ssrc, DepLibUV::GetTimeMs(), /*force=*/true);
 		ClearKeyFrameCandidate(ssrc, "stream_rebuilt", /*requestRecovery=*/false);
 		this->mapSsrcKeyFramePacketHistory.erase(ssrc);
 		this->keyFrameStartDisabledSsrcs.erase(ssrc);

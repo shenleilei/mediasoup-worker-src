@@ -105,6 +105,10 @@ namespace RTC
 			uint32_t timestamp{ 0u };
 			bool frameEnd{ false };
 			bool marker{ false };
+			// Any packet of this sequence carried key-frame NAL traffic (the
+			// FU start / single NAL of an IRAP NAL, including later slices of
+			// a picture whose first slice was lost).
+			bool keyFrameTraffic{ false };
 		};
 
 		struct KeyFramePacketHistory
@@ -248,6 +252,24 @@ namespace RTC
 		{
 			return this->keyFrameIntegrityObserve;
 		}
+		bool testSawKeyFrameTraffic(uint32_t ssrc, uint32_t timestamp) const
+		{
+			return SawKeyFrameTrafficForTimestamp(ssrc, timestamp);
+		}
+		bool testKeyFrameNoStartWarned(uint32_t ssrc) const
+		{
+			return this->mapSsrcLastKeyFrameNoStartWarnAtMs.contains(ssrc);
+		}
+		uint64_t testLastKeyFrameCompleteAtMs(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcLastKeyFrameCompleteAtMs.find(ssrc);
+			return it == this->mapSsrcLastKeyFrameCompleteAtMs.end() ? 0u : it->second;
+		}
+		uint64_t testLastKeyFrameIncompleteAtMs(uint32_t ssrc) const
+		{
+			auto it = this->mapSsrcLastKeyFrameIncompleteAtMs.find(ssrc);
+			return it == this->mapSsrcLastKeyFrameIncompleteAtMs.end() ? 0u : it->second;
+		}
 		uint64_t testCompleteKeyFrameCount(uint32_t ssrc) const
 		{
 			auto it = this->mapSsrcCompleteKeyFrames.find(ssrc);
@@ -329,6 +351,9 @@ namespace RTC
 		void RecordKeyFramePacketHistory(RTC::RtpPacket* packet);
 		void ClearKeyFrameCandidate(uint32_t ssrc, const char* reason, bool requestRecovery);
 		void ClearKeyFrameCandidates(const char* reason, bool requestRecovery);
+		void MaybeLogKeyFrameSummary(uint32_t ssrc, uint64_t nowMs, bool force = false);
+		void WarnKeyFrameEndWithoutStart(uint32_t ssrc, uint32_t timestamp, uint16_t seq, uint64_t nowMs);
+		bool SawKeyFrameTrafficForTimestamp(uint32_t ssrc, uint32_t timestamp) const;
 		void EmitTraceEvent(flatbuffers::Offset<FBS::Producer::TraceNotification>& notification) const;
 
 		/* Pure virtual methods inherited from RTC::RtpStreamRecv::Listener. */
@@ -386,6 +411,14 @@ namespace RTC
 		absl::flat_hash_set<uint32_t> keyFrameStartDisabledSsrcs;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcCompleteKeyFrames;
 		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcIncompleteKeyFrames;
+		// Rate-limited per-SSRC evidence summary timestamp (worker INFO level).
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameSummaryAtMs;
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameNoStartWarnAtMs;
+		// Last complete/incomplete evidence times, included in summaries and
+		// forced dumps so a frozen stream can answer "when did the SFU last
+		// receive a complete key frame".
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameCompleteAtMs;
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastKeyFrameIncompleteAtMs;
 		// Viewer-request suppression diagnostics: cumulative count plus a
 		// rate-limited WARN so freeze incidents can prove "viewers asked, the
 		// cadence policy held them back" without flooding the log.
