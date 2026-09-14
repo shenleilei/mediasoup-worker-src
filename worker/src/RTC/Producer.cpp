@@ -938,14 +938,15 @@ namespace RTC
 
 			const uint64_t nowMs = DepLibUV::GetTimeMs();
 
-			// Rate-limit to one WARN per second per producer: a real viewer
-			// storm stays diagnosable without flooding the log.
+			// Rate-limit to one evidence line per second per producer: a real
+			// viewer storm stays diagnosable without flooding the log.  The
+			// line must survive default deployments, so it uses the
+			// level-gated evidence channel (never logTags).
 			if (nowMs - this->lastSuppressedViewerRequestLogAtMs >= 1000u)
 			{
 				this->lastSuppressedViewerRequestLogAtMs = nowMs;
 
-				MS_WARN_2TAGS(
-				  rtcp, rtx,
+				MS_EVIDENCE_WARN(
 				  "viewer key frame request suppressed [producerId:%s, mappedSsrc:%" PRIu32
 				  ", suppressedTotal:%" PRIu64 "]",
 				  this->id.c_str(),
