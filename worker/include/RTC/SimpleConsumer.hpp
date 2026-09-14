@@ -61,6 +61,10 @@ namespace RTC
 		void ReceiveRtcpXrReceiverReferenceTime(RTC::RTCP::ReceiverReferenceTime* report) override;
 		uint32_t GetTransmissionRate(uint64_t nowMs) override;
 		float GetRtt() const override;
+		uint32_t KeyFramesEmitted() const
+		{
+			return this->keyFramesEmitted;
+		}
 
 		/* Methods inherited from Channel::ChannelSocket::RequestHandler. */
 	public:
@@ -92,6 +96,12 @@ namespace RTC
 			// then its key frame requests are first-frame requests that bypass
 			// the coalescing delay (a new viewer must not wait out the window).
 			bool firstKeyFrameDelivered{ false };
+		// Downlink key-frame RTP packets handed by this consumer to the transport.
+		// Lets the service/triage tell "SimpleConsumer really handed a key frame
+		// to this viewer's transport" from "the upstream never provided one",
+		// independent of the browser-side decode counters.
+		uint32_t keyFramesEmitted{ 0u };
+		uint64_t lastKeyFrameEvidenceAtMs{ 0u };
 		RTC::SeqManager<uint16_t> rtpSeqManager;
 		bool managingBitrate{ false };
 		std::unique_ptr<RTC::Codecs::EncodingContext> encodingContext;

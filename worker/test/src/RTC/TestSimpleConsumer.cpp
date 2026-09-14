@@ -934,6 +934,45 @@ TEST_CASE(
 	CHECK(consumerListener.viewerKeyFrameRequests == 1u);
 }
 
+TEST_CASE(
+  "SimpleConsumer counts key frames handed to transport for downlink evidence",
+  "[consumer][rtp][keyframe][evidence]")
+{
+	ChannelMessageRegistrator* registrator = new ChannelMessageRegistrator();
+	RTC::Shared shared(registrator, nullptr);
+	TestConsumerListener consumerListener(H264Fixture);
+
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildConsumeRequest(builder, H264Fixture);
+	RTC::SimpleConsumer consumer(
+	  &shared, "consumer-keyframe-evidence", "producer-keyframe-evidence", &consumerListener, request);
+
+	TestRtpStreamRecvListener rtpStreamRecvListener;
+	RTC::RtpStream::Params producerParams;
+	producerParams.ssrc        = ProducerSsrc;
+	producerParams.payloadType = PayloadType;
+	producerParams.clockRate   = 90000u;
+	producerParams.mimeType.SetMimeType(H264Fixture.mimeType);
+	RTC::RtpStreamRecv producerStream(
+	  &rtpStreamRecvListener,
+	  producerParams,
+	  /*sendNackDelayMs*/ 0u,
+	  /*useRtpInactivityCheck*/ false);
+
+	SetupActiveSyncConsumer(consumer, producerStream);
+
+	// Non-key slice must not advance the evidence counter.
+	SendH264NalUnit(consumer, 5001u, 90000u, 1u); // Non-IDR slice.
+	CHECK(consumer.KeyFramesEmitted() == 0u);
+
+	// Each key frame (IDR, NAL type 5) handed to the transport advances it.
+	SendH264NalUnit(consumer, 5002u, 90000u, 5u); // IDR.
+	CHECK(consumer.KeyFramesEmitted() == 1u);
+
+	SendH264NalUnit(consumer, 5003u, 93000u, 5u); // Second IDR.
+	CHECK(consumer.KeyFramesEmitted() == 2u);
+}
+
 SCENARIO("SimpleConsumer forwards H265 parameter sets while waiting for sync", "[consumer][h265]")
 {
 	ChannelMessageRegistrator* registrator = new ChannelMessageRegistrator();

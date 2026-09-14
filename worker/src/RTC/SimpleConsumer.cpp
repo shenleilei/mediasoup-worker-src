@@ -946,6 +946,26 @@ namespace RTC
 
 			// May emit 'trace' event.
 			EmitTraceEventRtpAndKeyFrameTypes(packet);
+
+			// Downlink key-frame handoff evidence (rate-limited, production INFO on the
+			// evidence channel): lets triage prove whether SimpleConsumer handed a
+			// key frame to the transport, independent of whether the browser is
+			// still reporting its receive/decode counters.
+			if (packet->IsKeyFrame())
+			{
+				++this->keyFramesEmitted;
+				const uint64_t nowMs = DepLibUV::GetTimeMs();
+
+				if (nowMs - this->lastKeyFrameEvidenceAtMs >= 10000u)
+				{
+					this->lastKeyFrameEvidenceAtMs = nowMs;
+					MS_EVIDENCE_INFO(
+					  "downlink key frame handed to transport [consumerId:%s, producerId:%s, keyFramesEmitted:%" PRIu32 "]",
+					  this->id.c_str(),
+					  this->producerId.c_str(),
+					  this->keyFramesEmitted);
+				}
+			}
 		}
 		else
 		{
