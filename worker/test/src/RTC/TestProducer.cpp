@@ -637,6 +637,60 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer folds first-frame into an imminent release instead of forcing a duplicate",
+  "[producer][keyframe][cadence][first-frame][early-pass]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	// delay=3000 so that, after the 1s send-spacing has elapsed with a recent
+	// key frame in between (no pending-retry noise), the next scheduled
+	// release is ~1.9s away: inside the 2s early-pass threshold but not
+	// "recently sent".  This is the exact recording-storm shape: OSS recording
+	// refreshes lastRequestAt, so without the early-pass a real viewer's
+	// first-frame request would be dropped (old behavior) or would burst.
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/3000u, /*withPliFeedback=*/true, "video/VP8");
+	RTC::Producer producer(&shared, "producer-keyframe-earlypass", &listener, request);
+
+	// Create the RTP stream: the new-stream forced request sends once.
+	Vp8MediaPacket streamPacket(1u, 90000u, false);
+	CHECK(
+	  producer.ReceiveRtpPacket(streamPacket.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
+
+	// A key frame clears the pending retry (so no 1s re-request later) and
+	// refreshes the cadence baseline; the coalescing delayer stays open.
+	Vp8MediaPacket keyFrame(2u, 93600u, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(keyFrame.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
+
+	// Let the 1s send-spacing elapse (no key frame in between => no retry
+	// send).  nextRelease = baseline + 3000 is now ~1.9s away <= 2s threshold.
+	std::this_thread::sleep_for(std::chrono::milliseconds(1150u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+
+	// First-frame request: must FOLD into the imminent release (no second PLI
+	// now) - the old code forced a second PLI here.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+	// first-frame folded into the imminent release, no duplicate PLI
+
+	// The folded need must actually be served when the delayer fires (at the
+	// scheduled release), not dropped.
+	std::this_thread::sleep_for(std::chrono::milliseconds(2300u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
+	// the folded first-frame need is served by the imminent release
+}
+
+TEST_CASE(
   "Producer forwards viewer key frame requests when cadence delay is disabled",
   "[producer][keyframe][cadence]")
 {

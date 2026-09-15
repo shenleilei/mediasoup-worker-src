@@ -27,6 +27,13 @@ namespace RTC
 	// Minimum spacing between first-frame bypass sends so simultaneous
 	// consumer creations cannot burst the publisher.
 	static constexpr uint64_t KeyFrameFirstFrameRequestSpacingMs{ 1000u };
+	// New-viewer early pass: a first-frame request is served immediately when
+	// the next scheduled key frame release is farther than this threshold, and
+	// is folded into the imminent release otherwise (weekly review 2026-09-15,
+	// user feature).  OSS recording also requests key frames on this producer,
+	// so the 1s spacing is frequently "recently refreshed" by the recording and
+	// a real viewer's first frame must not wait out the watchdog cadence.
+	static constexpr uint64_t KeyFrameFirstFrameEarlyPassThresholdMs{ 2000u };
 	// Production-visible evidence cadence (worker INFO): one summary per SSRC
 	// per interval; bounded missing-sequence list on incomplete WARNs.
 	static constexpr uint64_t KeyFrameSummaryIntervalMs{ 60000u };
@@ -985,6 +992,24 @@ namespace RTC
 
 			if (firstFrameSsrc != 0u)
 			{
+				// A brand-new viewer must paint fast.  The naive rule was
+				// "always force, unless a request was forwarded within 1s".
+				// OSS recording requests key frames on the SAME producer/ssrc
+				// (recording start, segment boundaries), which keeps
+				// lastRequestAt freshly inside the 1s window and silently
+				// delays a real viewer's first frame to the watchdog cadence
+				// (up to keyFrameRequestDelay).  Decide by the next SCHEDULED
+				// release instead:
+				//  - imminent release (<= threshold): fold in (KeyFrameNeeded
+				//    marks a pending delayer so that release serves this
+				//    viewer too, without a duplicate request burst right
+				//    before the periodic);
+				//  - else: force NOW and restart the per-ssrc cadence clock
+				//    (ForceKeyFrameNeeded re-arms the delayer from now and
+				//    OnKeyFrameNeeded records lastRequestAt=now, so the next
+				//    periodic is a full interval away - no double request).
+				// No baseline / overdue => force (fresh room or a periodic
+				// already past due: do not make the viewer wait).
 				const uint64_t nowMs = DepLibUV::GetTimeMs();
 				auto lastSentIt      = this->mapSsrcLastKeyFrameRequestAtMs.find(firstFrameSsrc);
 				const bool recentlySent =
@@ -993,11 +1018,51 @@ namespace RTC
 
 				if (!recentlySent)
 				{
-					MS_DEBUG_DEV(
-					  "producer first-frame key frame request bypassing coalescing delay [producerId:%s, ssrc:%" PRIu32 "]",
-					  this->id.c_str(),
-					  firstFrameSsrc);
-					this->keyFrameRequestManager->ForceKeyFrameNeeded(firstFrameSsrc);
+					uint64_t lastKfMs{ 0u };
+					auto lastKfIt = this->mapSsrcKeyFrameCadenceAtMs.find(firstFrameSsrc);
+					if (lastKfIt != this->mapSsrcKeyFrameCadenceAtMs.end())
+					{
+						lastKfMs = lastKfIt->second;
+					}
+					uint64_t lastReqMs{ 0u };
+					if (lastSentIt != this->mapSsrcLastKeyFrameRequestAtMs.end())
+					{
+						lastReqMs = lastSentIt->second;
+					}
+					const uint64_t lastEventMs =
+					  lastKfMs > lastReqMs ? lastKfMs : lastReqMs;
+					const uint64_t nextReleaseMs =
+					  lastEventMs != 0u ? lastEventMs + this->keyFrameRequestDelay : nowMs;
+					const bool imminent =
+					  nextReleaseMs > nowMs &&
+					  (nextReleaseMs - nowMs) <= KeyFrameFirstFrameEarlyPassThresholdMs;
+
+					if (imminent)
+					{
+						MS_DEBUG_DEV(
+						  "producer first-frame key frame request folded into imminent release [producerId:%s, ssrc:%" PRIu32 ", nextReleaseMs:%" PRIu64 "]",
+						  this->id.c_str(),
+						  firstFrameSsrc,
+						  nextReleaseMs);
+						this->keyFrameRequestManager->KeyFrameNeeded(firstFrameSsrc);
+					}
+					else
+					{
+						MS_DEBUG_DEV(
+						  "producer first-frame key frame request bypassing coalescing delay [producerId:%s, ssrc:%" PRIu32 "]",
+						  this->id.c_str(),
+						  firstFrameSsrc);
+						this->keyFrameRequestManager->ForceKeyFrameNeeded(firstFrameSsrc);
+					}
+				}
+				else
+				{
+					// Within the 1s send-spacing of a forwarded request (mass
+					// join / another joiner / the recording): do not burst, but
+					// fold into the pending release instead of dropping this
+					// viewer's need entirely - the earlier force's IDR may have
+					// been forwarded before this viewer attached.
+					this->keyFrameRequestManager->KeyFrameNeeded(firstFrameSsrc);
 				}
 			}
 
