@@ -48,6 +48,16 @@ namespace RTC
 		uint32_t GetBitrate(uint64_t nowMs, uint8_t spatialLayer, uint8_t temporalLayer) override;
 		uint32_t GetSpatialLayerBitrate(uint64_t nowMs, uint8_t spatialLayer) override;
 		uint32_t GetLayerBitrate(uint64_t nowMs, uint8_t spatialLayer, uint8_t temporalLayer) override;
+		// Highest extended RTP sequence number the remote endpoint acknowledged
+		// in the most recent RTCP Receiver Report (0 until the first RR).  Lets
+		// server-side triage separate "browser did not receive" (egress grows,
+		// this stays flat) from "browser received but did not decode" (egress and
+		// this both grow while render counters stay flat) without any client
+		// release.  Weekly review 2026-09-15.
+		uint32_t GetRtcpHighestSeqReceived() const
+		{
+			return this->rtcpHighestSeqReceived;
+		}
 
 	private:
 		void StorePacket(RTC::RtpPacket* packet, std::shared_ptr<RTC::RtpPacket>& sharedPacket);
@@ -76,6 +86,9 @@ namespace RTC
 		uint32_t receiverReportExpectedPrior{ 0u };
 		int32_t receiverReportLostPrior{ 0 };
 		bool hasReceiverReportLossWindow{ false };
+		// Highest extended sequence number acknowledged in the most recent RTCP
+		// Receiver Report (browser "received up to here"), 0 until the first RR.
+		uint32_t rtcpHighestSeqReceived{ 0u };
 	};
 } // namespace RTC
 

@@ -286,6 +286,12 @@ namespace RTC
 		this->fractionLost = report->GetFractionLost();
 
 		const uint32_t lastSeq = report->GetLastSeq();
+
+		// Retain the acknowledged highest sequence for server-side downlink
+		// evidence (weekly review 2026-09-15): it proves how far the browser has
+		// received, independent of any client report.
+		this->rtcpHighestSeqReceived = lastSeq;
+
 		if (this->firstPacketMs > 0u && lastSeq >= this->baseSeq)
 		{
 			const uint32_t expected = lastSeq - this->baseSeq + 1u;

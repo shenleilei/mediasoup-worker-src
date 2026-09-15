@@ -959,10 +959,13 @@ namespace RTC
 				{
 					this->lastKeyFrameEvidenceAtMs = nowMs;
 					MS_EVIDENCE_INFO(
-					  "downlink key frame handed to transport [consumerId:%s, producerId:%s, keyFramesEmitted:%" PRIu32 "]",
+					  "downlink key frame handed to transport [consumerId:%s, producerId:%s, keyFramesEmitted:%" PRIu32
+					  ", viewerHighestSeqReceived:%" PRIu32 ", viewerFractionLost:%" PRIu8 "]",
 					  this->id.c_str(),
 					  this->producerId.c_str(),
-					  this->keyFramesEmitted);
+					  this->keyFramesEmitted,
+					  this->rtpStream->GetRtcpHighestSeqReceived(),
+					  this->rtpStream->GetFractionLost());
 				}
 			}
 		}

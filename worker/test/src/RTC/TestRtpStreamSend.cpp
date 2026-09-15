@@ -1,5 +1,6 @@
 #include "common.hpp"
 #include "RTC/RTCP/FeedbackRtpNack.hpp"
+#include "RTC/RTCP/ReceiverReport.hpp"
 #include "RTC/RtpPacket.hpp"
 #include "RTC/RtpStream.hpp"
 #include "RTC/RtpStreamSend.hpp"
@@ -635,4 +636,71 @@ SCENARIO("NACK and RTP packets retransmission", "[rtp][rtcp][nack]")
 		delete stream;
 	}
 #endif
+}
+
+SCENARIO("RTCP Receiver Report acknowledged sequence is retained and exposed", "[rtp][rtcp][rr]")
+{
+	class TestRrListener : public RtpStreamSend::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*stream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+		}
+
+		void OnRtpStreamRetransmitRtpPacket(RtpStreamSend* /*stream*/, RtpPacket* /*packet*/) override
+		{
+		}
+	};
+
+	// clang-format off
+	uint8_t rrRtpBuffer[1500] =
+	{
+		0b10000000, 0b01111011, 0b01010010, 0b00001110,
+		0b01011011, 0b01101011, 0b11001010, 0b10110101,
+		0, 0, 0, 2
+	};
+	// clang-format on
+
+	TestRrListener listener;
+	RtpStream::Params params;
+
+	params.ssrc          = 1111;
+	params.clockRate     = 90000;
+	params.useNack       = false;
+	params.mimeType.type = RTC::RtpCodecMimeType::Type::VIDEO;
+
+	std::string mid;
+	auto* stream = new RtpStreamSend(&listener, params, mid);
+
+	// No RTCP RR yet: highest acknowledged sequence is unknown (0).
+	REQUIRE(stream->GetRtcpHighestSeqReceived() == 0u);
+
+	// Receive one packet so the stream has a base sequence.
+	auto* packet = CreateRtpPacket(rrRtpBuffer, 21006, 1533790901);
+	SendRtpPacket({ { stream, params.ssrc } }, packet);
+
+	// First RR: the browser acknowledges reception up to seq 21009 with loss.
+	RTCP::ReceiverReport report;
+
+	report.SetSsrc(params.ssrc);
+	report.SetLastSeq(21009);
+	report.SetTotalLost(1);
+	report.SetFractionLost(2);
+
+	stream->ReceiveRtcpReceiverReport(&report);
+
+	REQUIRE(stream->GetRtcpHighestSeqReceived() == 21009u);
+	REQUIRE(stream->GetFractionLost() == 2u);
+
+	// A newer RR advances the acknowledged sequence (browser kept receiving).
+	report.SetLastSeq(21020);
+	report.SetTotalLost(2);
+	report.SetFractionLost(1);
+
+	stream->ReceiveRtcpReceiverReport(&report);
+
+	REQUIRE(stream->GetRtcpHighestSeqReceived() == 21020u);
+	REQUIRE(stream->GetFractionLost() == 1u);
+
+	delete stream;
 }
