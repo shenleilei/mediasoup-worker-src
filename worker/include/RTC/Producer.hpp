@@ -244,6 +244,25 @@ namespace RTC
 		void ReceiveRtcpSenderReport(RTC::RTCP::SenderReport* report);
 		void ReceiveRtcpXrDelaySinceLastRr(RTC::RTCP::DelaySinceLastRr::SsrcInfo* ssrcInfo);
 		bool GetRtcp(RTC::RTCP::CompoundPacket* packet, uint64_t nowMs);
+		/*
+		 * First-frame early pass (weekly review 2026-09-15): a consumer that
+		 * still needs its very first decodable frame must not wait out the
+		 * coalescing window.  The three-state decision is a pure function so it
+		 * can be unit-tested without timers.
+		 */
+		enum class FirstFrameAction
+		{
+			// Fold into the next scheduled release (or absorb a burst).
+			FOLD,
+			// Send now, bypassing the coalescing window.
+			FORCE
+		};
+		static FirstFrameAction DecideFirstFrameAction(
+		  uint64_t nextReleaseMs,
+		  uint64_t nowMs,
+		  uint64_t lastFirstFrameForceAtMs,
+		  uint64_t foldWindowMs,
+		  uint64_t forceSpacingMs);
 		void RequestKeyFrame(uint32_t mappedSsrc, bool fromViewerRtcp, bool firstFrameRequest = false);
 
 #ifdef MS_TEST
@@ -393,6 +412,12 @@ namespace RTC
 		// stream. The watchdog uses this to enforce a minimum spacing between
 		// ANY two forwarded requests, not just its own fires.
 		void MarkKeyFrameRequestSent(uint32_t ssrc, uint64_t nowMs);
+		// First-frame early pass (weekly review 2026-09-15).
+		uint32_t ResolveSsrcFromMappedSsrc(uint32_t mappedSsrc) const;
+		// Estimated next scheduled key frame release for the SSRC
+		// (max(lastKeyFrame, lastRequest) + delay), 0 when no baseline exists.
+		uint64_t GetNextKeyFrameReleaseEstimateMs(uint32_t ssrc) const;
+		void HandleFirstFrameKeyFrameRequest(uint32_t ssrc);
 		void CheckKeyFrameCadence(uint32_t ssrc, uint64_t nowMs);
 		KeyFrameTrackResult TrackUpstreamKeyFramePacket(
 		  RTC::RtpPacket* packet, bool isRtx, uint64_t nowMs);
@@ -522,6 +547,13 @@ namespace RTC
 		// cadence policy held them back" without flooding the log.
 		uint64_t suppressedViewerKeyFrameRequests{ 0u };
 		uint64_t lastSuppressedViewerRequestLogAtMs{ 0u };
+		// First-frame early pass bookkeeping: per-SSRC last force time for the
+		// 1s anti-storm guard plus producer-level counters and rate-limited
+		// evidence timestamps (weekly review 2026-09-15).
+		absl::flat_hash_map<uint32_t, uint64_t> mapSsrcLastFirstFrameForceAtMs;
+		uint64_t firstFrameForced{ 0u };
+		uint64_t firstFrameFolded{ 0u };
+		uint64_t lastFirstFrameEvidenceLogAtMs{ 0u };
 		// Others.
 		RTC::Media::Kind kind;
 		RTC::RtpParameters rtpParameters;

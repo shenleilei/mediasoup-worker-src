@@ -92,10 +92,6 @@ namespace RTC
 		RTC::RtpStreamRecv* producerRtpStream{ nullptr };
 		bool keyFrameSupported{ false };
 		bool syncRequired{ false };
-			// True once this consumer has forwarded its first key frame; until
-			// then its key frame requests are first-frame requests that bypass
-			// the coalescing delay (a new viewer must not wait out the window).
-			bool firstKeyFrameDelivered{ false };
 		// Downlink key-frame RTP packets handed by this consumer to the transport.
 		// Lets the service/triage tell "SimpleConsumer really handed a key frame
 		// to this viewer's transport" from "the upstream never provided one",

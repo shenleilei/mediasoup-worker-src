@@ -878,7 +878,6 @@ namespace RTC
 			if (packet->IsKeyFrame())
 			{
 				MS_DEBUG_TAG(rtp, "sync key frame received");
-				this->firstKeyFrameDelivered = true;
 			}
 
 			this->rtpSeqManager.Sync(packet->GetSequenceNumber() - 1);
@@ -1248,10 +1247,13 @@ namespace RTC
 
 		auto mappedSsrc = this->consumableRtpEncodings[0].ssrc;
 
-		// A request from a consumer that has not yet delivered its first key
-		// frame is a first-frame request regardless of the caller's flag: the
-		// viewer is still waiting to render anything at all.
-		const bool effectiveFirstFrame = firstFrameRequest || !this->firstKeyFrameDelivered;
+		// A consumer that still needs its very first decodable frame asks right
+		// away.  syncRequired is authoritative for "this consumer cannot render
+		// anything until the next key frame": it is set on create / transport
+		// (re)connect / resume and cleared only when a sync key frame is
+		// actually received.  One signal covers first-frame, reconnect and
+		// resume, replacing the old sticky firstKeyFrameDelivered flag.
+		const bool effectiveFirstFrame = firstFrameRequest || this->syncRequired;
 
 		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, effectiveFirstFrame);
 	}

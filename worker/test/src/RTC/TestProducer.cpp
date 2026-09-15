@@ -596,44 +596,116 @@ TEST_CASE(
 	REQUIRE(listener.rtpStreams.size() == 1u);
 	REQUIRE(listener.sentRtcpPackets.size() == 0u);
 
-	// An internal (non-viewer) request is forwarded immediately and records
-	// the send time for the spacing guard.
+	// An internal (non-viewer) request is forwarded immediately and opens the
+	// 5s coalescing window.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false);
 	REQUIRE(listener.sentRtcpPackets.size() == 1u);
 
-	// A first-frame request within the 1s spacing window is absorbed by the
-	// pending retry instead of sending again: simultaneous consumer creations
-	// cannot burst the publisher.
+	// A first-frame request right after is NOT an imminent release (next
+	// scheduled release is ~5s away) and no first-frame force happened within
+	// the last 1s, so it must FORCE now: a new viewer must not wait out the
+	// open window just because OSS recording refreshed lastRequestAt.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
-	CHECK(listener.sentRtcpPackets.size() == 1u);
+	REQUIRE(listener.sentRtcpPackets.size() == 2u);
+
+	// A second first-frame request inside the 1s force-spacing window is
+	// absorbed (folded into the pending release) instead of sending again:
+	// simultaneous consumer creations cannot burst the publisher.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
 
 	// Viewer-originated requests stay suppressed regardless of the
 	// first-frame flag: the anti-storm property for RTCP-driven requests is
 	// unchanged.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
-	CHECK(listener.sentRtcpPackets.size() == 1u);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
 
-	// After the spacing window (with a key frame delivered in between, as in
-	// the real flow), a first-frame request bypasses the open coalescing
-	// window instead of waiting out the 5s delay.
-	std::this_thread::sleep_for(std::chrono::milliseconds(1100u));
-	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
-	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
-	Vp8MediaPacket secondKeyFrame(2u, 94500u, true);
+	// Deliver a key frame so the 1s pending retry does not fire while waiting
+	// for the next spacing window (it also refreshes the cadence baseline).
+	Vp8MediaPacket secondKeyFrame(2u, 93600u, true);
 	CHECK(
 	  producer.ReceiveRtpPacket(secondKeyFrame.packet.get()) ==
 	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
-	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
-	REQUIRE(listener.sentRtcpPackets.size() == 2u);
 
-	// The spacing guard applies again right after the bypass send.
+	// After the force-spacing window, a fresh first-frame request bypasses
+	// the (still open) coalescing window again instead of waiting out the 5s
+	// delay.
+	std::this_thread::sleep_for(std::chrono::milliseconds(1100u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
-	CHECK(listener.sentRtcpPackets.size() == 2u);
+	REQUIRE(listener.sentRtcpPackets.size() == 3u);
+
+	// The force-spacing guard applies again right after the bypass send.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 3u);
 
 	// Non-first-frame internal requests remain coalesced: no immediate send
 	// while the delayer window opened by the bypass is pending.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false);
-	CHECK(listener.sentRtcpPackets.size() == 2u);
+	CHECK(listener.sentRtcpPackets.size() == 3u);
+}
+
+TEST_CASE(
+  "Producer first-frame decision classifies fold/force without timers",
+  "[producer][keyframe][cadence][first-frame][early-pass][decision]")
+{
+	// Deterministic, sleep-free unit test of the pure three-state decision
+	// behind the first-frame early pass.  All timestamps are synthetic.
+	using Action = RTC::Producer::FirstFrameAction;
+	constexpr uint64_t FoldWindowMs{ 2000u };
+	constexpr uint64_t ForceSpacingMs{ 1000u };
+
+	// No schedule to rely on (fresh room / no baseline yet): force now.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(
+	    /*nextReleaseMs=*/0u, /*nowMs=*/100000u, /*lastForceAtMs=*/0u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FORCE);
+
+	// Release already overdue: force now (never make the viewer wait).
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(99999u, 100000u, 0u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FORCE);
+
+	// Release exactly now: force.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(100000u, 100000u, 0u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FORCE);
+
+	// Release inside the fold window: fold (the imminent release serves this
+	// viewer too), even when a previous force is long past.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(102000u, 100000u, 90000u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FOLD);
+
+	// Just outside the fold window with the force-spacing elapsed: force.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(102001u, 100000u, 0u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FORCE);
+
+	// Outside the fold window, force-spacing exactly elapsed: force.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(110000u, 100000u, 99000u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FORCE);
+
+	// Outside the fold window but a force happened within the last 1s:
+	// absorb (fold) so a mass join stays a single request.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(110000u, 100000u, 99100u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FOLD);
+
+	// Outside the fold window, never forced before: force.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(110000u, 100000u, 0u, FoldWindowMs, ForceSpacingMs) ==
+	  Action::FORCE);
+
+	// A zero fold window (tiny delay) never folds: force whenever the spacing
+	// allows, otherwise absorb.
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(100100u, 100000u, 0u, 0u, ForceSpacingMs) == Action::FORCE);
+	CHECK(
+	  RTC::Producer::DecideFirstFrameAction(100100u, 100000u, 99500u, 0u, ForceSpacingMs) ==
+	  Action::FOLD);
 }
 
 TEST_CASE(
@@ -644,14 +716,14 @@ TEST_CASE(
 	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
 	TestProducerListener listener;
 	flatbuffers::FlatBufferBuilder builder;
-	// delay=3000 so that, after the 1s send-spacing has elapsed with a recent
-	// key frame in between (no pending-retry noise), the next scheduled
-	// release is ~1.9s away: inside the 2s early-pass threshold but not
-	// "recently sent".  This is the exact recording-storm shape: OSS recording
-	// refreshes lastRequestAt, so without the early-pass a real viewer's
-	// first-frame request would be dropped (old behavior) or would burst.
+	// delay=4000 so the fold window min(2000, delay/2)=2000 is not the whole
+	// cadence: after the key frame the next scheduled release is ~4s away and
+	// we fold at ~2.5s (remaining ~1.5s, inside the 2s fold window).  This is
+	// the exact recording-storm shape: OSS recording refreshed lastRequestAt,
+	// so without the early-pass this viewer's first-frame request would be
+	// dropped (old behavior) or would burst (naive force).
 	const auto* request = BuildProduceRequest(
-	  builder, /*keyFrameRequestDelay=*/3000u, /*withPliFeedback=*/true, "video/VP8");
+	  builder, /*keyFrameRequestDelay=*/4000u, /*withPliFeedback=*/true, "video/VP8");
 	RTC::Producer producer(&shared, "producer-keyframe-earlypass", &listener, request);
 
 	// Create the RTP stream: the new-stream forced request sends once.
@@ -669,21 +741,21 @@ TEST_CASE(
 	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 	REQUIRE(listener.sentRtcpPackets.size() == 1u);
 
-	// Let the 1s send-spacing elapse (no key frame in between => no retry
-	// send).  nextRelease = baseline + 3000 is now ~1.9s away <= 2s threshold.
-	std::this_thread::sleep_for(std::chrono::milliseconds(1150u));
+	// Let ~2.5s elapse: the next scheduled release (baseline + 4000) is now
+	// ~1.5s away, inside the 2s fold window and outside the 1s force-spacing
+	// (no request for 2.5s).
+	std::this_thread::sleep_for(std::chrono::milliseconds(2500u));
 	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
 	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
 
 	// First-frame request: must FOLD into the imminent release (no second PLI
-	// now) - the old code forced a second PLI here.
+	// now) - the naive rule forced a second PLI here.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
 	CHECK(listener.sentRtcpPackets.size() == 1u);
-	// first-frame folded into the imminent release, no duplicate PLI
 
 	// The folded need must actually be served when the delayer fires (at the
 	// scheduled release), not dropped.
-	std::this_thread::sleep_for(std::chrono::milliseconds(2300u));
+	std::this_thread::sleep_for(std::chrono::milliseconds(1800u));
 	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
 	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
 	CHECK(listener.sentRtcpPackets.size() == 2u);

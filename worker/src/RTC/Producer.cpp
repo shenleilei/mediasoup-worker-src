@@ -10,8 +10,9 @@
 #include "RTC/RTCP/Feedback.hpp"
 #include "RTC/RTCP/XrReceiverReferenceTime.hpp"
 #include <absl/container/inlined_vector.h>
-#include <cstdlib> // std::getenv()
-#include <cstring> // std::memcpy()
+#include <algorithm> // std::min()
+#include <cstdlib>   // std::getenv()
+#include <cstring>   // std::memcpy()
 #include <string_view>
 
 namespace RTC
@@ -28,12 +29,16 @@ namespace RTC
 	// consumer creations cannot burst the publisher.
 	static constexpr uint64_t KeyFrameFirstFrameRequestSpacingMs{ 1000u };
 	// New-viewer early pass: a first-frame request is served immediately when
-	// the next scheduled key frame release is farther than this threshold, and
-	// is folded into the imminent release otherwise (weekly review 2026-09-15,
-	// user feature).  OSS recording also requests key frames on this producer,
-	// so the 1s spacing is frequently "recently refreshed" by the recording and
-	// a real viewer's first frame must not wait out the watchdog cadence.
-	static constexpr uint64_t KeyFrameFirstFrameEarlyPassThresholdMs{ 2000u };
+	// New-viewer early pass fold window: a first-frame request is folded into
+	// the next scheduled key frame release when it is imminent (within this
+	// window from the release), and is sent immediately otherwise (weekly
+	// review 2026-09-15, user feature).  OSS recording also requests key frames
+	// on this producer, so the 1s force-spacing is frequently "recently
+	// refreshed" by the recording and a real viewer's first frame must not
+	// wait out the watchdog cadence.  At runtime the window is additionally
+	// capped at keyFrameRequestDelay/2 so a small delay cannot make the force
+	// branch dead code.
+	static constexpr uint64_t KeyFrameFirstFrameFoldWindowMs{ 2000u };
 	// Production-visible evidence cadence (worker INFO): one summary per SSRC
 	// per interval; bounded missing-sequence list on incomplete WARNs.
 	static constexpr uint64_t KeyFrameSummaryIntervalMs{ 60000u };
@@ -936,9 +941,9 @@ namespace RTC
 		// > 0), viewer RTCP PLI/FIR must not drive publisher key frame
 		// generation: many viewers could otherwise keep the publisher
 		// generating back-to-back key frames. The cadence watchdog is then the
-		// only automatic key frame requester. Suppressed requests are counted
-		// and reported (rate-limited) so freeze incidents can prove that
-		// viewers asked and how long the policy held them back.
+		// owner of request timing; viewer asks are still counted and reported
+		// (rate-limited) so freeze incidents can prove that viewers asked and
+		// how long the policy held them back.
 		if (fromViewerRtcp && this->keyFrameRequestDelay > 0u)
 		{
 			++this->suppressedViewerKeyFrameRequests;
@@ -964,134 +969,9 @@ namespace RTC
 			return;
 		}
 
-		// First-frame requests (a consumer that has not yet delivered any key
-		// frame) bypass the coalescing delay: a new viewer must not wait out
-		// the window before rendering anything.  A 1s send-spacing guard keeps
-		// simultaneous joins from turning into a request burst; the pending
-		// retry timer covers the remainder.
-		if (firstFrameRequest && !fromViewerRtcp)
-		{
-			uint32_t firstFrameSsrc{ 0u };
-			auto mappedIt = this->mapMappedSsrcSsrc.find(mappedSsrc);
-
-			if (mappedIt != this->mapMappedSsrcSsrc.end())
-			{
-				firstFrameSsrc = mappedIt->second;
-			}
-			else
-			{
-				for (const auto& encodingMapping : this->rtpMapping.encodings)
-				{
-					if (encodingMapping.mappedSsrc == mappedSsrc && encodingMapping.ssrc != 0u)
-					{
-						firstFrameSsrc = encodingMapping.ssrc;
-						break;
-					}
-				}
-			}
-
-			if (firstFrameSsrc != 0u)
-			{
-				// A brand-new viewer must paint fast.  The naive rule was
-				// "always force, unless a request was forwarded within 1s".
-				// OSS recording requests key frames on the SAME producer/ssrc
-				// (recording start, segment boundaries), which keeps
-				// lastRequestAt freshly inside the 1s window and silently
-				// delays a real viewer's first frame to the watchdog cadence
-				// (up to keyFrameRequestDelay).  Decide by the next SCHEDULED
-				// release instead:
-				//  - imminent release (<= threshold): fold in (KeyFrameNeeded
-				//    marks a pending delayer so that release serves this
-				//    viewer too, without a duplicate request burst right
-				//    before the periodic);
-				//  - else: force NOW and restart the per-ssrc cadence clock
-				//    (ForceKeyFrameNeeded re-arms the delayer from now and
-				//    OnKeyFrameNeeded records lastRequestAt=now, so the next
-				//    periodic is a full interval away - no double request).
-				// No baseline / overdue => force (fresh room or a periodic
-				// already past due: do not make the viewer wait).
-				const uint64_t nowMs = DepLibUV::GetTimeMs();
-				auto lastSentIt      = this->mapSsrcLastKeyFrameRequestAtMs.find(firstFrameSsrc);
-				const bool recentlySent =
-				  lastSentIt != this->mapSsrcLastKeyFrameRequestAtMs.end() &&
-				  nowMs - lastSentIt->second < KeyFrameFirstFrameRequestSpacingMs;
-
-				if (!recentlySent)
-				{
-					uint64_t lastKfMs{ 0u };
-					auto lastKfIt = this->mapSsrcKeyFrameCadenceAtMs.find(firstFrameSsrc);
-					if (lastKfIt != this->mapSsrcKeyFrameCadenceAtMs.end())
-					{
-						lastKfMs = lastKfIt->second;
-					}
-					uint64_t lastReqMs{ 0u };
-					if (lastSentIt != this->mapSsrcLastKeyFrameRequestAtMs.end())
-					{
-						lastReqMs = lastSentIt->second;
-					}
-					const uint64_t lastEventMs =
-					  lastKfMs > lastReqMs ? lastKfMs : lastReqMs;
-					const uint64_t nextReleaseMs =
-					  lastEventMs != 0u ? lastEventMs + this->keyFrameRequestDelay : nowMs;
-					const bool imminent =
-					  nextReleaseMs > nowMs &&
-					  (nextReleaseMs - nowMs) <= KeyFrameFirstFrameEarlyPassThresholdMs;
-
-					if (imminent)
-					{
-						MS_DEBUG_DEV(
-						  "producer first-frame key frame request folded into imminent release [producerId:%s, ssrc:%" PRIu32 ", nextReleaseMs:%" PRIu64 "]",
-						  this->id.c_str(),
-						  firstFrameSsrc,
-						  nextReleaseMs);
-						this->keyFrameRequestManager->KeyFrameNeeded(firstFrameSsrc);
-					}
-					else
-					{
-						MS_DEBUG_DEV(
-						  "producer first-frame key frame request bypassing coalescing delay [producerId:%s, ssrc:%" PRIu32 "]",
-						  this->id.c_str(),
-						  firstFrameSsrc);
-						this->keyFrameRequestManager->ForceKeyFrameNeeded(firstFrameSsrc);
-					}
-				}
-				else
-				{
-					// Within the 1s send-spacing of a forwarded request (mass
-					// join / another joiner / the recording): do not burst, but
-					// fold into the pending release instead of dropping this
-					// viewer's need entirely - the earlier force's IDR may have
-					// been forwarded before this viewer attached.
-					this->keyFrameRequestManager->KeyFrameNeeded(firstFrameSsrc);
-				}
-			}
-
-			return;
-		}
-
-		uint32_t ssrc{ 0u };
-		auto it = this->mapMappedSsrcSsrc.find(mappedSsrc);
-
-		if (it != this->mapMappedSsrcSsrc.end())
-		{
-			ssrc = it->second;
-		}
-		else
-		{
-			for (const auto& encodingMapping : this->rtpMapping.encodings)
-			{
-				if (encodingMapping.mappedSsrc == mappedSsrc && encodingMapping.ssrc != 0u)
-				{
-					ssrc = encodingMapping.ssrc;
-					MS_DEBUG_DEV(
-					  "producer key frame request recovered ssrc from static rtpMapping [producerId:%s, mappedSsrc:%" PRIu32 ", ssrc:%" PRIu32 "]",
-					  this->id.c_str(),
-					  mappedSsrc,
-					  ssrc);
-					break;
-				}
-			}
-		}
+		// Resolve the producer SSRC once; both the first-frame branch and the
+		// regular coalesced path need it.
+		const uint32_t ssrc = ResolveSsrcFromMappedSsrc(mappedSsrc);
 
 		if (ssrc == 0u)
 		{
@@ -1103,9 +983,21 @@ namespace RTC
 			return;
 		}
 
-		// If the current RTP packet is a key frame for the given mapped SSRC do
-		// nothing since we are gonna provide Consumers with the requested key frame
-		// right now.
+		// Log when the SSRC had to be recovered from the static rtpMapping
+		// (the dynamic per-ssrc mapping did not contain it yet).
+		if (this->mapMappedSsrcSsrc.find(mappedSsrc) == this->mapMappedSsrcSsrc.end())
+		{
+			MS_DEBUG_DEV(
+			  "producer key frame request recovered ssrc from static rtpMapping [producerId:%s, mappedSsrc:%" PRIu32
+			  ", ssrc:%" PRIu32 "]",
+			  this->id.c_str(),
+			  mappedSsrc,
+			  ssrc);
+		}
+
+		// If the current RTP packet is a key frame for the given SSRC do
+		// nothing since we are gonna provide Consumers with the requested key
+		// frame right now.
 		//
 		// NOTE: We know that this may only happen before calling MangleRtpPacket()
 		// so the SSRC of the packet is still the original one and not the mapped one.
@@ -1126,12 +1018,179 @@ namespace RTC
 			return;
 		}
 
+		// First-frame requests (a consumer that has not yet delivered any key
+		// frame) bypass the coalescing delay: a new viewer must not wait out
+		// the window before rendering anything.  A per-ssrc force-spacing
+		// guard keeps simultaneous joins from turning into a request burst;
+		// the pending retry timer covers the remainder.
+		if (firstFrameRequest && !fromViewerRtcp)
+		{
+			HandleFirstFrameKeyFrameRequest(ssrc);
+
+			return;
+		}
+
 		MS_DEBUG_DEV(
 		  "producer key frame request scheduled [producerId:%s, mappedSsrc:%" PRIu32 ", ssrc:%" PRIu32 "]",
 		  this->id.c_str(),
 		  mappedSsrc,
 		  ssrc);
 		this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
+	}
+
+	// Pure three-state decision for a first-frame key frame request (weekly
+	// review 2026-09-15).  Fold when the next scheduled release is imminent
+	// (it will serve this viewer too); otherwise force now, but never more
+	// often than forceSpacingMs per ssrc so a mass join stays a single
+	// request.  A missing or already-overdue schedule is FORCE: never make a
+	// first viewer wait out the window.
+	Producer::FirstFrameAction Producer::DecideFirstFrameAction(
+	  uint64_t nextReleaseMs,
+	  uint64_t nowMs,
+	  uint64_t lastFirstFrameForceAtMs,
+	  uint64_t foldWindowMs,
+	  uint64_t forceSpacingMs)
+	{
+		// No baseline (0) or already overdue: force.
+		if (nextReleaseMs == 0u || nextReleaseMs <= nowMs)
+		{
+			return FirstFrameAction::FORCE;
+		}
+
+		const uint64_t remainingMs = nextReleaseMs - nowMs;
+
+		if (remainingMs <= foldWindowMs)
+		{
+			return FirstFrameAction::FOLD;
+		}
+
+		if (nowMs - lastFirstFrameForceAtMs >= forceSpacingMs)
+		{
+			return FirstFrameAction::FORCE;
+		}
+
+		return FirstFrameAction::FOLD;
+	}
+
+	uint32_t Producer::ResolveSsrcFromMappedSsrc(uint32_t mappedSsrc) const
+	{
+		MS_TRACE();
+
+		auto it = this->mapMappedSsrcSsrc.find(mappedSsrc);
+
+		if (it != this->mapMappedSsrcSsrc.end())
+		{
+			return it->second;
+		}
+
+		for (const auto& encodingMapping : this->rtpMapping.encodings)
+		{
+			if (encodingMapping.mappedSsrc == mappedSsrc && encodingMapping.ssrc != 0u)
+			{
+				return encodingMapping.ssrc;
+			}
+		}
+
+		return 0u;
+	}
+
+	uint64_t Producer::GetNextKeyFrameReleaseEstimateMs(uint32_t ssrc) const
+	{
+		MS_TRACE();
+
+		uint64_t lastKeyFrameMs{ 0u };
+		auto keyFrameIt = this->mapSsrcKeyFrameCadenceAtMs.find(ssrc);
+
+		if (keyFrameIt != this->mapSsrcKeyFrameCadenceAtMs.end())
+		{
+			lastKeyFrameMs = keyFrameIt->second;
+		}
+
+		uint64_t lastRequestMs{ 0u };
+		auto requestIt = this->mapSsrcLastKeyFrameRequestAtMs.find(ssrc);
+
+		if (requestIt != this->mapSsrcLastKeyFrameRequestAtMs.end())
+		{
+			lastRequestMs = requestIt->second;
+		}
+
+		const uint64_t lastEventMs = lastKeyFrameMs > lastRequestMs ? lastKeyFrameMs : lastRequestMs;
+
+		// No baseline yet: the caller treats 0 as "no schedule to rely on".
+		if (lastEventMs == 0u)
+		{
+			return 0u;
+		}
+
+		return lastEventMs + this->keyFrameRequestDelay;
+	}
+
+	void Producer::HandleFirstFrameKeyFrameRequest(uint32_t ssrc)
+	{
+		MS_TRACE();
+
+		const uint64_t nowMs = DepLibUV::GetTimeMs();
+
+		// The fold window must not swallow the whole cadence: when the delay
+		// is small, only requests within half a cadence of the next release
+		// are folded and the rest are forced (never make a first viewer wait).
+		const uint64_t foldWindowMs =
+		  std::min<uint64_t>(KeyFrameFirstFrameFoldWindowMs, this->keyFrameRequestDelay / 2u);
+
+		auto lastForceIt = this->mapSsrcLastFirstFrameForceAtMs.find(ssrc);
+
+		const uint64_t lastForceAtMs =
+		  lastForceIt != this->mapSsrcLastFirstFrameForceAtMs.end() ? lastForceIt->second : 0u;
+
+		const FirstFrameAction action = DecideFirstFrameAction(
+		  GetNextKeyFrameReleaseEstimateMs(ssrc),
+		  nowMs,
+		  lastForceAtMs,
+		  foldWindowMs,
+		  KeyFrameFirstFrameRequestSpacingMs);
+
+		if (action == FirstFrameAction::FORCE)
+		{
+			++this->firstFrameForced;
+			this->mapSsrcLastFirstFrameForceAtMs[ssrc] = nowMs;
+
+			MS_DEBUG_DEV(
+			  "producer first-frame key frame request bypassing coalescing delay [producerId:%s, ssrc:%" PRIu32
+			  "]",
+			  this->id.c_str(),
+			  ssrc);
+
+			this->keyFrameRequestManager->ForceKeyFrameNeeded(ssrc);
+		}
+		else
+		{
+			++this->firstFrameFolded;
+
+			MS_DEBUG_DEV(
+			  "producer first-frame key frame request folded into scheduled release [producerId:%s, ssrc:%" PRIu32
+			  "]",
+			  this->id.c_str(),
+			  ssrc);
+
+			this->keyFrameRequestManager->KeyFrameNeeded(ssrc);
+		}
+
+		// Rate-limited production evidence (same channel as viewer suppression
+		// so it survives default deployments): proves the policy ran and how
+		// often a first viewer was forced vs folded.
+		if (nowMs - this->lastFirstFrameEvidenceLogAtMs >= 1000u)
+		{
+			this->lastFirstFrameEvidenceLogAtMs = nowMs;
+
+			MS_EVIDENCE_WARN(
+			  "producer first-frame key frame request %s [producerId:%s, ssrc:%" PRIu32
+			  ", forcedTotal:%" PRIu64 ", foldedTotal:%" PRIu64 "]",
+			  action == FirstFrameAction::FORCE ? "forced" : "folded",
+			  this->id.c_str(),
+			  ssrc,
+			  this->firstFrameForced,
+			  this->firstFrameFolded);
+		}
 	}
 
 	void Producer::MarkKeyFrameCadenceBaseline(uint32_t ssrc, uint64_t nowMs)
@@ -1160,24 +1219,16 @@ namespace RTC
 			return;
 		}
 
-		auto it = this->mapSsrcKeyFrameCadenceAtMs.find(ssrc);
-
-		if (it == this->mapSsrcKeyFrameCadenceAtMs.end())
-		{
-			return;
-		}
-
-		const uint64_t sinceLastKeyFrameMs = nowMs - it->second;
-
-		if (sinceLastKeyFrameMs < this->keyFrameRequestDelay)
-		{
-			return;
-		}
-
-		// Enforce a minimum spacing against ANY previously forwarded request
-		// (new stream, resume, coalesced internal request, earlier watchdog
-		// fire, NACK-generator recovery via the manager), not just against
-		// watchdog fires. Without this, an internal request at
+		// Fire only when the next scheduled release (max(lastKeyFrame,
+		// lastRequest) + delay) is already due; 0 means no baseline yet (the
+		// watchdog must not fire before the first key frame).  This is the same
+		// reasoning the first-frame early pass uses, so both share
+		// GetNextKeyFrameReleaseEstimateMs() instead of duplicating it.
+		//
+		// This enforces a minimum spacing against ANY previous forwarded
+		// request (new stream, resume, coalesced internal request, earlier
+		// watchdog fire, NACK-generator recovery via the manager), not just
+		// against watchdog fires. Without this, an internal request at
 		// t=interval-epsilon would be immediately followed by another watchdog
 		// request.
 		//
@@ -1191,16 +1242,19 @@ namespace RTC
 		//   request whose key frame has not arrived, without the spacing check.
 		// Full unification of every path into one scheduler is the next design
 		// packet (change folder T15).
-		auto requestIt = this->mapSsrcLastKeyFrameRequestAtMs.find(ssrc);
+		const uint64_t nextReleaseMs = GetNextKeyFrameReleaseEstimateMs(ssrc);
 
-		if (requestIt != this->mapSsrcLastKeyFrameRequestAtMs.end())
+		if (nextReleaseMs == 0u || nextReleaseMs > nowMs)
 		{
-			const uint64_t sinceLastRequestMs = nowMs - requestIt->second;
+			return;
+		}
 
-			if (sinceLastRequestMs < this->keyFrameRequestDelay)
-			{
-				return;
-			}
+		uint64_t sinceLastKeyFrameMs{ 0u };
+		auto keyFrameIt = this->mapSsrcKeyFrameCadenceAtMs.find(ssrc);
+
+		if (keyFrameIt != this->mapSsrcKeyFrameCadenceAtMs.end())
+		{
+			sinceLastKeyFrameMs = nowMs - keyFrameIt->second;
 		}
 
 		// Refresh the baseline before requesting so a packet burst while waiting
