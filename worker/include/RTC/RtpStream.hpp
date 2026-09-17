@@ -84,6 +84,13 @@ namespace RTC
 		{
 			return this->params.clockRate;
 		}
+		// Extended (32-bit) value of a 16-bit RTP sequence number in this
+		// stream's cycle count, i.e. the same domain as the extended highest
+		// sequence number acknowledged by an RTCP Receiver Report.
+		uint32_t GetExtendedSeq(uint16_t seq) const
+		{
+			return this->cycles + seq;
+		}
 		const std::string& GetRid() const
 		{
 			return this->params.rid;

@@ -28,6 +28,11 @@ namespace RTC
 	// Minimum spacing between first-frame bypass sends so simultaneous
 	// consumer creations cannot burst the publisher.
 	static constexpr uint64_t KeyFrameFirstFrameRequestSpacingMs{ 1000u };
+	// Viewer asks for an unacknowledged first-frame handoff are the urgent
+	// case (that viewer already lost one key frame), so they are spaced
+	// tighter than the internal first-frame path. The per-SSRC spacing is
+	// what keeps a mass join from becoming a publisher request burst.
+	static constexpr uint64_t KeyFrameFirstFrameViewerSpacingMs{ 500u };
 	// New-viewer early pass: a first-frame request is served immediately when
 	// New-viewer early pass fold window: a first-frame request is folded into
 	// the next scheduled key frame release when it is imminent (within this
@@ -944,7 +949,15 @@ namespace RTC
 		// owner of request timing; viewer asks are still counted and reported
 		// (rate-limited) so freeze incidents can prove that viewers asked and
 		// how long the policy held them back.
-		if (fromViewerRtcp && this->keyFrameRequestDelay > 0u)
+		//
+		// Exception (2026-09-17 ZL92061/front): a viewer that SimpleConsumer
+		// still reports as first-frame unconfirmed (it was handed a key frame
+		// that its RTCP Receiver Report never acknowledged) is not a served
+		// viewer, so its ask is forwarded through the first-frame path below
+		// instead of being counted and dropped here. The guard rails are
+		// unchanged: at most one forwarded request per SSRC per viewer
+		// force-spacing, coalesced across every waiting consumer.
+		if (fromViewerRtcp && this->keyFrameRequestDelay > 0u && !firstFrameRequest)
 		{
 			++this->suppressedViewerKeyFrameRequests;
 
@@ -1022,10 +1035,12 @@ namespace RTC
 		// frame) bypass the coalescing delay: a new viewer must not wait out
 		// the window before rendering anything.  A per-ssrc force-spacing
 		// guard keeps simultaneous joins from turning into a request burst;
-		// the pending retry timer covers the remainder.
-		if (firstFrameRequest && !fromViewerRtcp)
+		// the pending retry timer covers the remainder. Viewer-originated
+		// first-frame asks (an unconfirmed handoff) take the same path with a
+		// tighter spacing.
+		if (firstFrameRequest)
 		{
-			HandleFirstFrameKeyFrameRequest(ssrc);
+			HandleFirstFrameKeyFrameRequest(ssrc, fromViewerRtcp);
 
 			return;
 		}
@@ -1125,7 +1140,7 @@ namespace RTC
 		return lastEventMs + this->keyFrameRequestDelay;
 	}
 
-	void Producer::HandleFirstFrameKeyFrameRequest(uint32_t ssrc)
+	void Producer::HandleFirstFrameKeyFrameRequest(uint32_t ssrc, bool fromViewerRtcp)
 	{
 		MS_TRACE();
 
@@ -1147,7 +1162,7 @@ namespace RTC
 		  nowMs,
 		  lastForceAtMs,
 		  foldWindowMs,
-		  KeyFrameFirstFrameRequestSpacingMs);
+		  fromViewerRtcp ? KeyFrameFirstFrameViewerSpacingMs : KeyFrameFirstFrameRequestSpacingMs);
 
 		if (action == FirstFrameAction::FORCE)
 		{
@@ -1184,10 +1199,11 @@ namespace RTC
 
 			MS_EVIDENCE_WARN(
 			  "producer first-frame key frame request %s [producerId:%s, ssrc:%" PRIu32
-			  ", forcedTotal:%" PRIu64 ", foldedTotal:%" PRIu64 "]",
+			  ", source:%s, forcedTotal:%" PRIu64 ", foldedTotal:%" PRIu64 "]",
 			  action == FirstFrameAction::FORCE ? "forced" : "folded",
 			  this->id.c_str(),
 			  ssrc,
+			  fromViewerRtcp ? "viewer-rtcp" : "internal",
 			  this->firstFrameForced,
 			  this->firstFrameFolded);
 		}

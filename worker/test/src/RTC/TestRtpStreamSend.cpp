@@ -35,6 +35,80 @@ static void SendRtpPacket(std::vector<std::pair<RtpStreamSend*, uint32_t>> strea
 	}
 }
 
+TEST_CASE("RtpStreamSend exposes the extended sequence across wraps", "[rtp][rtpstream][seq]")
+{
+	class TestRtpStreamListener : public RtpStreamSend::Listener
+	{
+	public:
+		void OnRtpStreamScore(RtpStream* /*rtpStream*/, uint8_t /*score*/, uint8_t /*previousScore*/) override
+		{
+		}
+
+		void OnRtpStreamRetransmitRtpPacket(RtpStreamSend* /*rtpStream*/, RtpPacket* /*packet*/) override
+		{
+		}
+	};
+
+	// clang-format off
+	uint8_t rtpBuffer1[1500] =
+	{
+		0b10000000, 0b01111011, 0, 0,
+		0, 0, 0, 0,
+		0, 0, 0, 2
+	};
+	// clang-format on
+	uint8_t rtpBuffer2[1500];
+	uint8_t rtpBuffer3[1500];
+	uint8_t rtpBuffer4[1500];
+
+	std::memcpy(rtpBuffer2, rtpBuffer1, sizeof(rtpBuffer1));
+	std::memcpy(rtpBuffer3, rtpBuffer1, sizeof(rtpBuffer1));
+	std::memcpy(rtpBuffer4, rtpBuffer1, sizeof(rtpBuffer1));
+
+	TestRtpStreamListener listener;
+	RtpStream::Params params;
+	params.ssrc          = 1111u;
+	params.payloadType   = 123u;
+	params.clockRate     = 90000u;
+	params.useNack       = true;
+	params.mimeType.type = RTC::RtpCodecMimeType::Type::VIDEO;
+	std::string mid;
+	RtpStreamSend stream(&listener, params, mid);
+
+	// RTCP Receiver Reports acknowledge extended (32-bit) sequence numbers;
+	// a consumer comparing them against the handed sequence needs the same
+	// domain, including across the 16-bit RTP sequence wrap.
+	std::shared_ptr<RtpPacket> sharedPacket;
+	auto* packet65534 = CreateRtpPacket(rtpBuffer1, 65534u, 1000u);
+	auto* packet65535 = CreateRtpPacket(rtpBuffer2, 65535u, 1001u);
+	auto* packet0     = CreateRtpPacket(rtpBuffer3, 0u, 1002u);
+	auto* packet1     = CreateRtpPacket(rtpBuffer4, 1u, 1003u);
+
+	for (auto* packet : { packet65534, packet65535, packet0, packet1 })
+	{
+		packet->SetSsrc(params.ssrc);
+	}
+
+	CHECK(stream.GetExtendedSeq(65534u) == 65534u);
+	stream.ReceivePacket(packet65534, sharedPacket);
+	CHECK(stream.GetExtendedSeq(65534u) == 65534u);
+
+	stream.ReceivePacket(packet65535, sharedPacket);
+	CHECK(stream.GetExtendedSeq(65535u) == 65535u);
+
+	// 65535 -> 0 starts the second 64K cycle.
+	stream.ReceivePacket(packet0, sharedPacket);
+	CHECK(stream.GetExtendedSeq(0u) == 65536u);
+
+	stream.ReceivePacket(packet1, sharedPacket);
+	CHECK(stream.GetExtendedSeq(1u) == 65537u);
+
+	delete packet65534;
+	delete packet65535;
+	delete packet0;
+	delete packet1;
+}
+
 static void CheckRtxPacket(RtpPacket* packet, uint16_t seq, uint32_t timestamp)
 {
 	REQUIRE(packet);

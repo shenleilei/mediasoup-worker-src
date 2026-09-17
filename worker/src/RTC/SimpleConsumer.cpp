@@ -29,6 +29,11 @@ namespace RTC
 		constexpr uint8_t H265NalTypeSuffixSei{ 40u };
 		constexpr uint8_t H265NalTypeAp{ 48u };
 
+		// A viewer that was handed a key frame but never confirmed receiving it
+		// keeps asking as a first-frame requester; this budget bounds how much
+		// publisher key-frame generation one unconfirmed episode may drive.
+		constexpr uint32_t KeyFrameFirstFrameUnconfirmedMaxAsks{ 5u };
+
 		bool IsH264SyncParameterNalType(uint8_t nalType)
 		{
 			switch (nalType)
@@ -955,6 +960,17 @@ namespace RTC
 				++this->keyFramesEmitted;
 				const uint64_t nowMs = DepLibUV::GetTimeMs();
 
+				// Record the handed sync key frame in the viewer's own sequence
+				// domain: an RTCP Receiver Report acknowledges extended (32-bit)
+				// sequence numbers, so storing the plain 16-bit wire sequence
+				// here would break the confirmation check after the first 64K
+				// sequence wrap. RtpStream has just counted this packet's cycle.
+				if (isSyncPacket)
+				{
+					this->syncKeyFrameHanded = true;
+					this->syncKeyFrameSeq    = this->rtpStream->GetExtendedSeq(seq);
+				}
+
 				if (nowMs - this->lastKeyFrameEvidenceAtMs >= 10000u)
 				{
 					this->lastKeyFrameEvidenceAtMs = nowMs;
@@ -1119,6 +1135,7 @@ namespace RTC
 		MS_TRACE();
 
 		this->syncRequired = true;
+		MarkFirstFrameUnconfirmed();
 
 		if (IsActive())
 		{
@@ -1150,6 +1167,7 @@ namespace RTC
 		MS_TRACE();
 
 		this->syncRequired = true;
+		MarkFirstFrameUnconfirmed();
 
 		if (IsActive())
 		{
@@ -1239,6 +1257,46 @@ namespace RTC
 		}
 	}
 
+	void SimpleConsumer::MarkFirstFrameUnconfirmed()
+	{
+		this->firstFrameUnconfirmed        = true;
+		this->firstFrameUnconfirmedAsks    = 0u;
+		this->firstFrameUnconfirmedSinceMs = DepLibUV::GetTimeMs();
+		// A key frame handed before this point cannot confirm a new episode.
+		this->syncKeyFrameHanded = false;
+		this->syncKeyFrameSeq    = 0u;
+	}
+
+	void SimpleConsumer::ResolveFirstFrameConfirmation()
+	{
+		const uint64_t nowMs = DepLibUV::GetTimeMs();
+		const uint32_t ackedSeq =
+		  this->rtpStream != nullptr ? this->rtpStream->GetRtcpHighestSeqReceived() : 0u;
+		// The viewer confirms by acknowledging (RTCP Receiver Report) the very
+		// sequence that carried the sync key frame to its transport.
+		const bool viewerConfirmed = this->syncKeyFrameHanded && ackedSeq >= this->syncKeyFrameSeq;
+		const bool budgetSpent = this->firstFrameUnconfirmedAsks >= KeyFrameFirstFrameUnconfirmedMaxAsks;
+
+		if (!viewerConfirmed && !budgetSpent)
+		{
+			return;
+		}
+
+		this->firstFrameUnconfirmed = false;
+
+		MS_EVIDENCE_INFO(
+		  "consumer first-frame confirmation resolved [consumerId:%s, producerId:%s, syncKeyFrameSeq:%" PRIu32
+		  ", viewerHighestSeqReceived:%" PRIu32 ", asks:%" PRIu32 ", unconfirmedMs:%" PRIu64
+		  ", reason:%s]",
+		  this->id.c_str(),
+		  this->producerId.c_str(),
+		  this->syncKeyFrameSeq,
+		  ackedSeq,
+		  this->firstFrameUnconfirmedAsks,
+		  nowMs - this->firstFrameUnconfirmedSinceMs,
+		  viewerConfirmed ? "viewer-ack" : "ask-budget-spent");
+	}
+
 	void SimpleConsumer::RequestKeyFrame(bool fromViewerRtcp, bool firstFrameRequest)
 	{
 		MS_TRACE();
@@ -1250,13 +1308,31 @@ namespace RTC
 
 		auto mappedSsrc = this->consumableRtpEncodings[0].ssrc;
 
+		// A handed key frame is not a rendered frame. While the handoff of the
+		// current episode stays unacknowledged, this consumer is a first-frame
+		// requester even though syncRequired was already cleared by the handoff:
+		// otherwise a viewer whose first key frame never became decodable media
+		// waits out a whole producer key-frame cadence (2026-09-17 ZL92061/front:
+		// 5.0s first picture, every ask suppressed).
+		if (this->firstFrameUnconfirmed)
+		{
+			ResolveFirstFrameConfirmation();
+		}
+
 		// A consumer that still needs its very first decodable frame asks right
 		// away.  syncRequired is authoritative for "this consumer cannot render
 		// anything until the next key frame": it is set on create / transport
 		// (re)connect / resume and cleared only when a sync key frame is
 		// actually received.  One signal covers first-frame, reconnect and
-		// resume, replacing the old sticky firstKeyFrameDelivered flag.
-		const bool effectiveFirstFrame = firstFrameRequest || this->syncRequired;
+		// resume, replacing the old sticky firstKeyFrameDelivered flag;
+		// firstFrameUnconfirmed additionally covers "handed but never confirmed".
+		const bool effectiveFirstFrame =
+		  firstFrameRequest || this->syncRequired || this->firstFrameUnconfirmed;
+
+		if (this->firstFrameUnconfirmed)
+		{
+			++this->firstFrameUnconfirmedAsks;
+		}
 
 		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, effectiveFirstFrame);
 	}

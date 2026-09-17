@@ -417,7 +417,7 @@ namespace RTC
 		// Estimated next scheduled key frame release for the SSRC
 		// (max(lastKeyFrame, lastRequest) + delay), 0 when no baseline exists.
 		uint64_t GetNextKeyFrameReleaseEstimateMs(uint32_t ssrc) const;
-		void HandleFirstFrameKeyFrameRequest(uint32_t ssrc);
+		void HandleFirstFrameKeyFrameRequest(uint32_t ssrc, bool fromViewerRtcp);
 		void CheckKeyFrameCadence(uint32_t ssrc, uint64_t nowMs);
 		KeyFrameTrackResult TrackUpstreamKeyFramePacket(
 		  RTC::RtpPacket* packet, bool isRtx, uint64_t nowMs);

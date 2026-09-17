@@ -614,9 +614,13 @@ TEST_CASE(
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
 	CHECK(listener.sentRtcpPackets.size() == 2u);
 
-	// Viewer-originated requests stay suppressed regardless of the
-	// first-frame flag: the anti-storm property for RTCP-driven requests is
-	// unchanged.
+	// A viewer ask without the first-frame flag stays suppressed outright.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
+
+	// A viewer first-frame ask (an unconfirmed handoff) inside the tighter
+	// viewer force-spacing window is folded instead of sent, so the
+	// anti-storm property also holds for RTCP-driven first-frame asks.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
 	CHECK(listener.sentRtcpPackets.size() == 2u);
 
@@ -644,6 +648,50 @@ TEST_CASE(
 	// while the delayer window opened by the bypass is pending.
 	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false);
 	CHECK(listener.sentRtcpPackets.size() == 3u);
+}
+
+TEST_CASE(
+  "Producer forwards a viewer first-frame ask with a tighter force spacing",
+  "[producer][keyframe][cadence][first-frame][viewer]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildProduceRequest(
+	  builder, /*keyFrameRequestDelay=*/5000u, /*withPliFeedback=*/true, "video/VP8");
+	RTC::Producer producer(&shared, "producer-keyframe-viewer-first-frame", &listener, request);
+
+	// A key frame first packet creates the stream without any request.
+	Vp8MediaPacket keyFrame(1u, 90000u, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(keyFrame.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(listener.rtpStreams.size() == 1u);
+	REQUIRE(listener.sentRtcpPackets.size() == 0u);
+
+	// The internal first-frame request of a new consumer opens the 5s
+	// coalescing window and is forwarded immediately.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
+
+	// A viewer ask for that same unconfirmed first frame inside the 500ms
+	// viewer spacing is folded: per-SSRC spacing, not suppression, is what
+	// bounds RTCP-driven asks.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+
+	// Once the viewer spacing elapses the ask reaches the publisher even
+	// though the 5s coalescing window is still open: a viewer that lost its
+	// first key frame must not wait out the cadence.
+	std::this_thread::sleep_for(std::chrono::milliseconds(550u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	REQUIRE(listener.sentRtcpPackets.size() == 2u);
+
+	// The spacing applies again right after the forwarded ask.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 2u);
 }
 
 TEST_CASE(

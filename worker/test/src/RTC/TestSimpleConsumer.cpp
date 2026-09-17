@@ -413,7 +413,7 @@ namespace
 		  RTC::Consumer* /*consumer*/,
 		  uint32_t /*mappedSsrc*/,
 		  bool fromViewerRtcp,
-		  bool /*firstFrameRequest*/) override
+		  bool firstFrameRequest) override
 		{
 			++this->keyFrameRequests;
 
@@ -421,6 +421,13 @@ namespace
 			{
 				++this->viewerKeyFrameRequests;
 			}
+
+			if (firstFrameRequest)
+			{
+				++this->firstFrameRequests;
+			}
+
+			this->lastFirstFrameRequest = firstFrameRequest;
 		}
 
 		void OnConsumerNeedBitrateChange(RTC::Consumer* /*consumer*/) override
@@ -443,6 +450,8 @@ namespace
 		std::vector<PacketSnapshot> retransmittedPackets;
 		size_t keyFrameRequests{ 0u };
 		size_t viewerKeyFrameRequests{ 0u };
+		size_t firstFrameRequests{ 0u };
+		bool lastFirstFrameRequest{ false };
 		bool throwOnSend{ false };
 	};
 
@@ -932,6 +941,122 @@ TEST_CASE(
 
 	REQUIRE(consumerListener.keyFrameRequests == 1u);
 	CHECK(consumerListener.viewerKeyFrameRequests == 1u);
+}
+
+TEST_CASE(
+  "SimpleConsumer keeps an unacknowledged key frame handoff a first-frame ask",
+  "[consumer][rtcp][keyframe][first-frame]")
+{
+	ChannelMessageRegistrator* registrator = new ChannelMessageRegistrator();
+	RTC::Shared shared(registrator, nullptr);
+	TestConsumerListener consumerListener(H264Fixture);
+
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildConsumeRequest(builder, H264Fixture);
+	RTC::SimpleConsumer consumer(
+	  &shared, "consumer-first-frame-ack", "producer-first-frame-ack", &consumerListener, request);
+
+	TestRtpStreamRecvListener rtpStreamRecvListener;
+	RTC::RtpStream::Params producerParams;
+	producerParams.ssrc        = ProducerSsrc;
+	producerParams.payloadType = PayloadType;
+	producerParams.clockRate   = 90000u;
+	producerParams.mimeType.SetMimeType(H264Fixture.mimeType);
+	RTC::RtpStreamRecv producerStream(
+	  &rtpStreamRecvListener,
+	  producerParams,
+	  /*sendNackDelayMs*/ 0u,
+	  /*useRtpInactivityCheck*/ false);
+
+	SetupActiveSyncConsumer(consumer, producerStream);
+
+	RTC::RTCP::FeedbackPsPliPacket pli(ConsumerSsrc, ConsumerSsrc);
+
+	// No key frame was handed yet: the viewer ask is a first-frame ask.
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	REQUIRE(consumerListener.keyFrameRequests == 1u);
+	CHECK(consumerListener.lastFirstFrameRequest);
+
+	// Hand an IDR over: the consumer syncs on it, but a handoff is not proof
+	// that the viewer received decodable media.
+	SendH264NalUnit(consumer, 1u, 90000u, 5u);
+	REQUIRE(consumer.KeyFramesEmitted() == 1u);
+	REQUIRE(consumerListener.sentPackets.size() == 1u);
+
+	const uint16_t handoffSeq = consumerListener.sentPackets.back().sequenceNumber;
+
+	// Still unacknowledged: the viewer ask must keep the first-frame flag so a
+	// viewer whose handoff never arrived is not parked on the key-frame cadence.
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	REQUIRE(consumerListener.keyFrameRequests == 2u);
+	CHECK(consumerListener.lastFirstFrameRequest);
+
+	// A Receiver Report that has not reached the handed sequence yet does
+	// not confirm anything: the ask stays a first-frame ask.
+	RTC::RTCP::ReceiverReport behind;
+	behind.SetSsrc(ConsumerSsrc);
+	behind.SetLastSeq(static_cast<uint16_t>(handoffSeq - 1u));
+	consumer.ReceiveRtcpReceiverReport(&behind);
+
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	REQUIRE(consumerListener.keyFrameRequests == 3u);
+	CHECK(consumerListener.lastFirstFrameRequest);
+
+	// The viewer acknowledges the handed key frame through an RTCP Receiver
+	// Report: that is the only proof the handoff became usable media.
+	RTC::RTCP::ReceiverReport report;
+	report.SetSsrc(ConsumerSsrc);
+	report.SetLastSeq(handoffSeq);
+	consumer.ReceiveRtcpReceiverReport(&report);
+
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	REQUIRE(consumerListener.keyFrameRequests == 4u);
+	CHECK_FALSE(consumerListener.lastFirstFrameRequest);
+}
+
+TEST_CASE(
+  "SimpleConsumer bounds unconfirmed first-frame asks with an ask budget",
+  "[consumer][rtcp][keyframe][first-frame]")
+{
+	ChannelMessageRegistrator* registrator = new ChannelMessageRegistrator();
+	RTC::Shared shared(registrator, nullptr);
+	TestConsumerListener consumerListener(H264Fixture);
+
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildConsumeRequest(builder, H264Fixture);
+	RTC::SimpleConsumer consumer(
+	  &shared, "consumer-first-frame-budget", "producer-first-frame-budget", &consumerListener, request);
+
+	TestRtpStreamRecvListener rtpStreamRecvListener;
+	RTC::RtpStream::Params producerParams;
+	producerParams.ssrc        = ProducerSsrc;
+	producerParams.payloadType = PayloadType;
+	producerParams.clockRate   = 90000u;
+	producerParams.mimeType.SetMimeType(H264Fixture.mimeType);
+	RTC::RtpStreamRecv producerStream(
+	  &rtpStreamRecvListener,
+	  producerParams,
+	  /*sendNackDelayMs*/ 0u,
+	  /*useRtpInactivityCheck*/ false);
+
+	SetupActiveSyncConsumer(consumer, producerStream);
+
+	RTC::RTCP::FeedbackPsPliPacket pli(ConsumerSsrc, ConsumerSsrc);
+
+	SendH264NalUnit(consumer, 1u, 90000u, 5u);
+	REQUIRE(consumer.KeyFramesEmitted() == 1u);
+
+	// A viewer that never acknowledges keeps asking, but only the budgeted
+	// number of asks may drive the publisher; afterwards the cadence policy
+	// owns request timing again.
+	for (size_t i{ 0u }; i < 10u; ++i)
+	{
+		consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	}
+
+	CHECK(consumerListener.keyFrameRequests == 10u);
+	CHECK(consumerListener.firstFrameRequests == 5u);
+	CHECK_FALSE(consumerListener.lastFirstFrameRequest);
 }
 
 TEST_CASE(

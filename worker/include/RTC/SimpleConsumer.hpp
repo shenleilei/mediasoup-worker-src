@@ -76,6 +76,8 @@ namespace RTC
 		void UserOnPaused() override;
 		void UserOnResumed() override;
 		void CreateRtpStream();
+		void MarkFirstFrameUnconfirmed();
+		void ResolveFirstFrameConfirmation();
 		void RequestKeyFrame(bool fromViewerRtcp = false, bool firstFrameRequest = false) override;
 		void EmitScore() const;
 
@@ -92,6 +94,24 @@ namespace RTC
 		RTC::RtpStreamRecv* producerRtpStream{ nullptr };
 		bool keyFrameSupported{ false };
 		bool syncRequired{ false };
+		// Viewer-confirmed first frame. A key frame handed to the transport is
+		// only proof of a handoff, not proof of a viewer that can render: a new
+		// consumer can win the race against the viewer's own receive path
+		// (2026-09-17 ZL92061/front: handoff 0.19s after the transport came up,
+		// viewer decoded nothing for a whole key-frame cadence). While such a
+		// handoff stays unacknowledged the consumer keeps asking as a first-frame
+		// requester, bounded by an ask budget, so the viewer is not parked on the
+		// producer's key-frame cadence. Cleared by the viewer's RTCP Receiver
+		// Report acknowledging the handed key frame, or when the budget is spent.
+		bool firstFrameUnconfirmed{ false };
+		// Extended (32-bit) sequence of the sync key frame handed to the
+		// transport, in the same domain as the viewer's RTCP Receiver Report;
+		// only meaningful while syncKeyFrameHanded is true.
+		uint32_t syncKeyFrameSeq{ 0u };
+		bool syncKeyFrameHanded{ false };
+		// First-frame asks raised while the handoff is unconfirmed.
+		uint32_t firstFrameUnconfirmedAsks{ 0u };
+		uint64_t firstFrameUnconfirmedSinceMs{ 0u };
 		// Downlink key-frame RTP packets handed by this consumer to the transport.
 		// Lets the service/triage tell "SimpleConsumer really handed a key frame
 		// to this viewer's transport" from "the upstream never provided one",
