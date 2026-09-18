@@ -553,6 +553,32 @@ def format(ctx):
 
 
 @task(pre=[setup, flatc])
+def build_worker_test(ctx):
+    """
+    Build and install the worker Catch2 test binary without running it.
+
+    Lets the repository regression (`scripts/run_all_tests.sh all`) build the
+    worker suite up front and then run it as an exact-count gate
+    (unit:mediasoup-worker-tests), so new worker tests cannot silently stay
+    outside the full regression.
+    """
+    with ctx.cd(f'"{WORKER_DIR}"'):
+        ctx.run(
+            f'"{MESON}" compile -C "{BUILD_DIR}" -j {NUM_CORES} mediasoup-worker-test',
+            echo=True,
+            pty=PTY_SUPPORTED,
+            shell=SHELL
+        );
+    with ctx.cd(f'"{WORKER_DIR}"'):
+        ctx.run(
+            f'"{MESON}" install -C "{BUILD_DIR}" --no-rebuild --tags mediasoup-worker-test',
+            echo=True,
+            pty=PTY_SUPPORTED,
+            shell=SHELL
+        );
+
+
+@task(pre=[setup, flatc])
 def test(ctx):
     """
     Run worker tests
