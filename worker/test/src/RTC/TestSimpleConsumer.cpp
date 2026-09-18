@@ -19,10 +19,12 @@
 #include <flatbuffers/flatbuffers.h>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace RTC;
@@ -32,6 +34,9 @@ namespace
 	constexpr uint8_t PayloadType{ 111 };
 	constexpr uint32_t ProducerSsrc{ 11111111u };
 	constexpr uint32_t ConsumerSsrc{ 22222222u };
+	// Must exceed the production quiet window (KeyFrameFirstFrameUnconfirmed
+	// QuietMs = 3s) so the confirmed-but-quiet resolution path is exercised.
+	constexpr uint64_t FirstFrameQuietWindowMsForTest{ 3200u };
 
 	struct MediaFixture
 	{
@@ -1003,7 +1008,9 @@ TEST_CASE(
 	CHECK(consumerListener.lastFirstFrameRequest);
 
 	// The viewer acknowledges the handed key frame through an RTCP Receiver
-	// Report: that is the only proof the handoff became usable media.
+	// Report. Receipt (ring 2) is not decode (ring 3, ZL92061): while the
+	// acknowledged viewer keeps asking it must stay a first-frame requester,
+	// and this very ask -- the one R9 used to swallow -- is forwarded as one.
 	RTC::RTCP::ReceiverReport report;
 	report.SetSsrc(ConsumerSsrc);
 	report.SetLastSeq(handoffSeq);
@@ -1011,6 +1018,20 @@ TEST_CASE(
 
 	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
 	REQUIRE(consumerListener.keyFrameRequests == 4u);
+	CHECK(consumerListener.lastFirstFrameRequest);
+
+	// A bare ack must not close the episode: only once the acknowledged viewer
+	// has been quiet for the quiet window does it resolve as served, and only
+	// from then on is an ask a regular (non-first-frame) ask.
+	std::this_thread::sleep_for(std::chrono::milliseconds(FirstFrameQuietWindowMsForTest));
+
+	RTC::RTCP::ReceiverReport quietReport;
+	quietReport.SetSsrc(ConsumerSsrc);
+	quietReport.SetLastSeq(handoffSeq);
+	consumer.ReceiveRtcpReceiverReport(&quietReport);
+
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	REQUIRE(consumerListener.keyFrameRequests == 5u);
 	CHECK_FALSE(consumerListener.lastFirstFrameRequest);
 }
 

@@ -33,6 +33,13 @@ namespace RTC
 		// keeps asking as a first-frame requester; this budget bounds how much
 		// publisher key-frame generation one unconfirmed episode may drive.
 		constexpr uint32_t KeyFrameFirstFrameUnconfirmedMaxAsks{ 5u };
+		// How long a viewer that already acknowledged the handed key frame
+		// (RTCP Receiver Report, ring-2 evidence: "packets arrived") must keep
+		// asking before the episode resolves as served. 2026-09-17 ZL92061/front
+		// is ring 3 ("received but decoded nothing"): the viewer kept RR-acking
+		// while still PLIing, so a bare ack must not close the episode. Only
+		// "acked AND quiet for this long" counts as a served first frame.
+		constexpr uint64_t KeyFrameFirstFrameUnconfirmedQuietMs{ 3000u };
 
 		bool IsH264SyncParameterNalType(uint8_t nalType)
 		{
@@ -1102,6 +1109,15 @@ namespace RTC
 		MS_TRACE();
 
 		this->rtpStream->ReceiveRtcpReceiverReport(report);
+
+		// A Receiver Report can resolve an unconfirmed first-frame episode once
+		// the viewer has both confirmed the handed sequence and been quiet long
+		// enough; running the check here also keeps the unconfirmed flag from
+		// lingering until the viewer's next ask (round-2 review R14.1/14.2).
+		if (this->firstFrameUnconfirmed)
+		{
+			ResolveFirstFrameConfirmation();
+		}
 	}
 
 	void SimpleConsumer::ReceiveRtcpXrReceiverReferenceTime(RTC::RTCP::ReceiverReferenceTime* report)
@@ -1259,9 +1275,14 @@ namespace RTC
 
 	void SimpleConsumer::MarkFirstFrameUnconfirmed()
 	{
-		this->firstFrameUnconfirmed        = true;
-		this->firstFrameUnconfirmedAsks    = 0u;
-		this->firstFrameUnconfirmedSinceMs = DepLibUV::GetTimeMs();
+		this->firstFrameUnconfirmed            = true;
+		this->firstFrameUnconfirmedAsks        = 0u;
+		this->firstFrameUnconfirmedSinceMs     = DepLibUV::GetTimeMs();
+		// Seeded to 0 ("no viewer ask yet"): an episode whose viewer has never
+		// asked must not be resolved as quiet on the first RR that acks the
+		// handoff -- the viewer's very next PLI may already be in flight
+		// (round-2 review R8, ack-before-PLI ordering).
+		this->firstFrameUnconfirmedLastAskMs   = 0u;
 		// A key frame handed before this point cannot confirm a new episode.
 		this->syncKeyFrameHanded = false;
 		this->syncKeyFrameSeq    = 0u;
@@ -1276,8 +1297,19 @@ namespace RTC
 		// sequence that carried the sync key frame to its transport.
 		const bool viewerConfirmed = this->syncKeyFrameHanded && ackedSeq >= this->syncKeyFrameSeq;
 		const bool budgetSpent = this->firstFrameUnconfirmedAsks >= KeyFrameFirstFrameUnconfirmedMaxAsks;
+		// An RTCP RR ack alone is ring-2 evidence ("packets arrived") and must
+		// not close the episode: the documented 2026-09-17 ZL92061/front shape
+		// is ring 3, a viewer that acked the handed key frame yet decoded
+		// nothing and kept PLIing. The episode resolves as served only once the
+		// viewer has confirmed the handed sequence AND has raised at least one
+		// viewer ask AND then fallen quiet for a window; a viewer that acks
+		// before its first PLI must not be resolved as quiet (the PLI may be in
+		// flight). The ask budget still bounds viewers that never RR.
+		const bool quietAfterConfirm =
+		  viewerConfirmed && this->firstFrameUnconfirmedLastAskMs != 0u &&
+		  (nowMs - this->firstFrameUnconfirmedLastAskMs) >= KeyFrameFirstFrameUnconfirmedQuietMs;
 
-		if (!viewerConfirmed && !budgetSpent)
+		if (!budgetSpent && !quietAfterConfirm)
 		{
 			return;
 		}
@@ -1287,14 +1319,15 @@ namespace RTC
 		MS_EVIDENCE_INFO(
 		  "consumer first-frame confirmation resolved [consumerId:%s, producerId:%s, syncKeyFrameSeq:%" PRIu32
 		  ", viewerHighestSeqReceived:%" PRIu32 ", asks:%" PRIu32 ", unconfirmedMs:%" PRIu64
-		  ", reason:%s]",
+		  ", lastAskAgoMs:%" PRIu64 ", reason:%s]",
 		  this->id.c_str(),
 		  this->producerId.c_str(),
 		  this->syncKeyFrameSeq,
 		  ackedSeq,
 		  this->firstFrameUnconfirmedAsks,
 		  nowMs - this->firstFrameUnconfirmedSinceMs,
-		  viewerConfirmed ? "viewer-ack" : "ask-budget-spent");
+		  nowMs - this->firstFrameUnconfirmedLastAskMs,
+		  budgetSpent ? "ask-budget-spent" : "viewer-ack-quiet");
 	}
 
 	void SimpleConsumer::RequestKeyFrame(bool fromViewerRtcp, bool firstFrameRequest)
@@ -1314,11 +1347,7 @@ namespace RTC
 		// otherwise a viewer whose first key frame never became decodable media
 		// waits out a whole producer key-frame cadence (2026-09-17 ZL92061/front:
 		// 5.0s first picture, every ask suppressed).
-		if (this->firstFrameUnconfirmed)
-		{
-			ResolveFirstFrameConfirmation();
-		}
-
+		//
 		// A consumer that still needs its very first decodable frame asks right
 		// away.  syncRequired is authoritative for "this consumer cannot render
 		// anything until the next key frame": it is set on create / transport
@@ -1326,12 +1355,29 @@ namespace RTC
 		// actually received.  One signal covers first-frame, reconnect and
 		// resume, replacing the old sticky firstKeyFrameDelivered flag;
 		// firstFrameUnconfirmed additionally covers "handed but never confirmed".
+		//
+		// The effective flag is evaluated from the state BEFORE this ask may
+		// resolve the episode: the ask that closes an unconfirmed handoff is
+		// itself a first-frame ask. A viewer that acknowledges the handed key
+		// frame (RTCP RR) while still PLIing is exactly "received but not
+		// decoded", i.e. the one viewer that needs a forced key frame most;
+		// resolving first would demote that ask to a regular one and let the
+		// producer viewer-suppression path swallow it (round-2 review R9).
 		const bool effectiveFirstFrame =
 		  firstFrameRequest || this->syncRequired || this->firstFrameUnconfirmed;
 
 		if (this->firstFrameUnconfirmed)
 		{
+			// Only a viewer-originated ask proves the viewer is still waiting
+			// for a decodable frame and therefore refreshes the quiet window;
+			// internal asks (signaling / connect / resume) do not.
+			if (fromViewerRtcp)
+			{
+				this->firstFrameUnconfirmedLastAskMs = DepLibUV::GetTimeMs();
+			}
+
 			++this->firstFrameUnconfirmedAsks;
+			ResolveFirstFrameConfirmation();
 		}
 
 		this->listener->OnConsumerKeyFrameRequested(this, mappedSsrc, fromViewerRtcp, effectiveFirstFrame);

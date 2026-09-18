@@ -101,8 +101,11 @@ namespace RTC
 		// viewer decoded nothing for a whole key-frame cadence). While such a
 		// handoff stays unacknowledged the consumer keeps asking as a first-frame
 		// requester, bounded by an ask budget, so the viewer is not parked on the
-		// producer's key-frame cadence. Cleared by the viewer's RTCP Receiver
-		// Report acknowledging the handed key frame, or when the budget is spent.
+		// producer's key-frame cadence. Cleared when the ask budget is spent, or
+		// when the viewer has both acknowledged the handed key frame through its
+		// RTCP Receiver Report AND fallen quiet for KeyFrameFirstFrameUnconfirmed
+		// QuietMs: an ack alone is only ring-2 evidence ("packets arrived") and
+		// must not close an episode whose viewer still cannot decode (ring 3).
 		bool firstFrameUnconfirmed{ false };
 		// Extended (32-bit) sequence of the sync key frame handed to the
 		// transport, in the same domain as the viewer's RTCP Receiver Report;
@@ -112,6 +115,14 @@ namespace RTC
 		// First-frame asks raised while the handoff is unconfirmed.
 		uint32_t firstFrameUnconfirmedAsks{ 0u };
 		uint64_t firstFrameUnconfirmedSinceMs{ 0u };
+		// Time of the last VIEWER-originated first-frame ask raised while the
+		// handoff is unconfirmed (0 = the viewer never asked in this episode);
+		// drives the "confirmed but still asking" quiet window. Only viewer
+		// asks refresh it: an internal (signaling) ask is not proof that the
+		// viewer is still waiting for a decodable frame. Seeded to 0 in
+		// MarkFirstFrameUnconfirmed so a viewer that acks (RR) before its first
+		// PLI cannot be resolved as quiet prematurely (round-2 review R8).
+		uint64_t firstFrameUnconfirmedLastAskMs{ 0u };
 		// Downlink key-frame RTP packets handed by this consumer to the transport.
 		// Lets the service/triage tell "SimpleConsumer really handed a key frame
 		// to this viewer's transport" from "the upstream never provided one",
