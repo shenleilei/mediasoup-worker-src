@@ -1066,14 +1066,29 @@ namespace RTC
 	  uint64_t foldWindowMs,
 	  uint64_t forceSpacingMs)
 	{
-		// No baseline (0) or already overdue: force.
-		if (nextReleaseMs == 0u || nextReleaseMs <= nowMs)
+		// No baseline (0): force (a first viewer must not wait out an unknown
+		// window). An overdue schedule with no previous force for this ssrc is
+		// also forced - the very first request for a fresh consumer.
+		if (nextReleaseMs == 0u)
 		{
 			return FirstFrameAction::FORCE;
 		}
 
-		const uint64_t remainingMs = nextReleaseMs - nowMs;
+		const uint64_t remainingMs = nextReleaseMs > nowMs ? nextReleaseMs - nowMs : 0u;
 
+		if (remainingMs == 0u && lastFirstFrameForceAtMs == 0u)
+		{
+			return FirstFrameAction::FORCE;
+		}
+
+		// Only now does the fold/spacing policy run: an overdue schedule (e.g.
+		// keyFrameRequestDelay=0, where the release estimate is always
+		// lastEventMs+0) must NOT bypass the force-spacing, otherwise every
+		// viewer/internal first-frame ask becomes a 1:1 publisher key-frame
+		// request (round-3 review R15 probe: forcedTotal 121 with delay=0).
+		// A zero fold window (tiny delay) with an overdue baseline therefore
+		// folds into the pending/retry path, where the manager's pending
+		// de-duplication keeps it at one request.
 		if (remainingMs <= foldWindowMs)
 		{
 			return FirstFrameAction::FOLD;
@@ -1157,12 +1172,28 @@ namespace RTC
 		const uint64_t lastForceAtMs =
 		  lastForceIt != this->mapSsrcLastFirstFrameForceAtMs.end() ? lastForceIt->second : 0u;
 
-		const FirstFrameAction action = DecideFirstFrameAction(
-		  GetNextKeyFrameReleaseEstimateMs(ssrc),
-		  nowMs,
-		  lastForceAtMs,
-		  foldWindowMs,
-		  fromViewerRtcp ? KeyFrameFirstFrameViewerSpacingMs : KeyFrameFirstFrameRequestSpacingMs);
+		// R15 (round-3 review): a viewer-originated first-frame ask must respect
+		// the per-SSRC force-spacing BEFORE the "no release baseline / already
+		// overdue => FORCE" escape. Otherwise any node without a key-frame
+		// cadence delay (delay=0, the legacy/rollback default) turns each viewer
+		// PLI into a 1:1 publisher key-frame request (review probe: forcedTotal
+		// 121 with delay=0 vs 1 with delay=5000). Internal asks keep the legacy
+		// ordering so a brand-new consumer never waits out the window.
+		FirstFrameAction action;
+		if (fromViewerRtcp && lastForceAtMs != 0u &&
+		    nowMs - lastForceAtMs < KeyFrameFirstFrameViewerSpacingMs)
+		{
+			action = FirstFrameAction::FOLD;
+		}
+		else
+		{
+			action = DecideFirstFrameAction(
+			  GetNextKeyFrameReleaseEstimateMs(ssrc),
+			  nowMs,
+			  lastForceAtMs,
+			  foldWindowMs,
+			  fromViewerRtcp ? KeyFrameFirstFrameViewerSpacingMs : KeyFrameFirstFrameRequestSpacingMs);
+		}
 
 		if (action == FirstFrameAction::FORCE)
 		{

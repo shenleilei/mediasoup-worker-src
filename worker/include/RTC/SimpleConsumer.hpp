@@ -123,6 +123,12 @@ namespace RTC
 		// MarkFirstFrameUnconfirmed so a viewer that acks (RR) before its first
 		// PLI cannot be resolved as quiet prematurely (round-2 review R8).
 		uint64_t firstFrameUnconfirmedLastAskMs{ 0u };
+		// Time the RTCP RR first confirmed the handed key frame (0 = not yet
+		// confirmed). Anchors the healthy-viewer grace window: a viewer that
+		// never asks (never PLIs) must still resolve once the handoff is acked
+		// and KeyFrameFirstFrameConfirmedGraceMs has passed without any ask
+		// (round-3 review R16).
+		uint64_t firstFrameUnconfirmedConfirmedAtMs{ 0u };
 		// Downlink key-frame RTP packets handed by this consumer to the transport.
 		// Lets the service/triage tell "SimpleConsumer really handed a key frame
 		// to this viewer's transport" from "the upstream never provided one",

@@ -40,6 +40,12 @@ namespace RTC
 		// while still PLIing, so a bare ack must not close the episode. Only
 		// "acked AND quiet for this long" counts as a served first frame.
 		constexpr uint64_t KeyFrameFirstFrameUnconfirmedQuietMs{ 3000u };
+		// Healthy viewer grace (round-3 review R16): once the RTCP RR first
+		// confirms the handed key frame, a viewer that never raised a viewer
+		// ask (never PLIed - i.e. it decoded fine) resolves after this long
+		// without an ask. Longer than an ack-to-PLI in-flight gap, so the R8
+		// guard (ack-before-PLI must not resolve) still holds.
+		constexpr uint64_t KeyFrameFirstFrameConfirmedGraceMs{ 2000u };
 
 		bool IsH264SyncParameterNalType(uint8_t nalType)
 		{
@@ -1283,6 +1289,7 @@ namespace RTC
 		// handoff -- the viewer's very next PLI may already be in flight
 		// (round-2 review R8, ack-before-PLI ordering).
 		this->firstFrameUnconfirmedLastAskMs   = 0u;
+		this->firstFrameUnconfirmedConfirmedAtMs = 0u;
 		// A key frame handed before this point cannot confirm a new episode.
 		this->syncKeyFrameHanded = false;
 		this->syncKeyFrameSeq    = 0u;
@@ -1297,17 +1304,41 @@ namespace RTC
 		// sequence that carried the sync key frame to its transport.
 		const bool viewerConfirmed = this->syncKeyFrameHanded && ackedSeq >= this->syncKeyFrameSeq;
 		const bool budgetSpent = this->firstFrameUnconfirmedAsks >= KeyFrameFirstFrameUnconfirmedMaxAsks;
+
+		// Record the first moment the handoff was acknowledged: it anchors the
+		// healthy-viewer grace window below.
+		if (viewerConfirmed && this->firstFrameUnconfirmedConfirmedAtMs == 0u)
+		{
+			this->firstFrameUnconfirmedConfirmedAtMs = nowMs;
+		}
+
 		// An RTCP RR ack alone is ring-2 evidence ("packets arrived") and must
 		// not close the episode: the documented 2026-09-17 ZL92061/front shape
 		// is ring 3, a viewer that acked the handed key frame yet decoded
 		// nothing and kept PLIing. The episode resolves as served only once the
-		// viewer has confirmed the handed sequence AND has raised at least one
-		// viewer ask AND then fallen quiet for a window; a viewer that acks
-		// before its first PLI must not be resolved as quiet (the PLI may be in
-		// flight). The ask budget still bounds viewers that never RR.
+		// viewer has confirmed the handed sequence AND fallen quiet: quiet is
+		// measured from the last viewer ask (3s) when one exists, otherwise
+		// from the confirm time itself (2s grace) so a viewer that never asks
+		// (healthy, decoded fine) still ends the episode - and a viewer that
+		// acks before its first PLI (the PLI may be in flight) is not resolved
+		// early because neither window has elapsed yet (R8 + R16). The ask
+		// budget still bounds viewers that never RR.
+		uint64_t quietAnchorMs{ 0u };
+		uint64_t quietMs{ 0u };
+
+		if (this->firstFrameUnconfirmedLastAskMs != 0u)
+		{
+			quietAnchorMs = this->firstFrameUnconfirmedLastAskMs;
+			quietMs       = KeyFrameFirstFrameUnconfirmedQuietMs;
+		}
+		else
+		{
+			quietAnchorMs = this->firstFrameUnconfirmedConfirmedAtMs;
+			quietMs       = KeyFrameFirstFrameConfirmedGraceMs;
+		}
+
 		const bool quietAfterConfirm =
-		  viewerConfirmed && this->firstFrameUnconfirmedLastAskMs != 0u &&
-		  (nowMs - this->firstFrameUnconfirmedLastAskMs) >= KeyFrameFirstFrameUnconfirmedQuietMs;
+		  viewerConfirmed && quietAnchorMs != 0u && (nowMs - quietAnchorMs) >= quietMs;
 
 		if (!budgetSpent && !quietAfterConfirm)
 		{
@@ -1315,6 +1346,12 @@ namespace RTC
 		}
 
 		this->firstFrameUnconfirmed = false;
+
+		// R21.1: print 0 (not worker uptime) when the episode had no viewer ask.
+		const uint64_t lastAskAgoMs =
+		  this->firstFrameUnconfirmedLastAskMs != 0u
+		    ? nowMs - this->firstFrameUnconfirmedLastAskMs
+		    : 0u;
 
 		MS_EVIDENCE_INFO(
 		  "consumer first-frame confirmation resolved [consumerId:%s, producerId:%s, syncKeyFrameSeq:%" PRIu32
@@ -1326,7 +1363,7 @@ namespace RTC
 		  ackedSeq,
 		  this->firstFrameUnconfirmedAsks,
 		  nowMs - this->firstFrameUnconfirmedSinceMs,
-		  nowMs - this->firstFrameUnconfirmedLastAskMs,
+		  lastAskAgoMs,
 		  budgetSpent ? "ask-budget-spent" : "viewer-ack-quiet");
 	}
 

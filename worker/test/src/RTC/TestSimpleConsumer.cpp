@@ -37,6 +37,10 @@ namespace
 	// Must exceed the production quiet window (KeyFrameFirstFrameUnconfirmed
 	// QuietMs = 3s) so the confirmed-but-quiet resolution path is exercised.
 	constexpr uint64_t FirstFrameQuietWindowMsForTest{ 3200u };
+	// Must exceed KeyFrameFirstFrameConfirmedGraceMs (2s) so the
+	// confirmed-and-never-asking (healthy viewer) resolution path is exercised
+	// without racing the production grace.
+	constexpr uint64_t FirstFrameGraceWindowMsForTest{ 2200u };
 
 	struct MediaFixture
 	{
@@ -1032,6 +1036,75 @@ TEST_CASE(
 
 	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
 	REQUIRE(consumerListener.keyFrameRequests == 5u);
+	CHECK_FALSE(consumerListener.lastFirstFrameRequest);
+}
+
+TEST_CASE(
+  "SimpleConsumer resolves a confirmed viewer that never asks after the grace window",
+  "[consumer][rtcp][keyframe][first-frame]")
+{
+	ChannelMessageRegistrator* registrator = new ChannelMessageRegistrator();
+	RTC::Shared shared(registrator, nullptr);
+	TestConsumerListener consumerListener(H264Fixture);
+
+	flatbuffers::FlatBufferBuilder builder;
+	const auto* request = BuildConsumeRequest(builder, H264Fixture);
+	RTC::SimpleConsumer consumer(
+	  &shared, "consumer-first-frame-grace", "producer-first-frame-grace", &consumerListener, request);
+
+	TestRtpStreamRecvListener rtpStreamRecvListener;
+	RTC::RtpStream::Params producerParams;
+	producerParams.ssrc        = ProducerSsrc;
+	producerParams.payloadType = PayloadType;
+	producerParams.clockRate   = 90000u;
+	producerParams.mimeType.SetMimeType(H264Fixture.mimeType);
+	RTC::RtpStreamRecv producerStream(
+	  &rtpStreamRecvListener,
+	  producerParams,
+	  /*sendNackDelayMs*/ 0u,
+	  /*useRtpInactivityCheck*/ false);
+
+	SetupActiveSyncConsumer(consumer, producerStream);
+
+	RTC::RTCP::FeedbackPsPliPacket pli(ConsumerSsrc, ConsumerSsrc);
+
+	// Hand an IDR over: the consumer syncs on it, but a handoff alone is not
+	// proof the viewer rendered anything.
+	SendH264NalUnit(consumer, 1u, 90000u, 5u);
+	REQUIRE(consumer.KeyFramesEmitted() == 1u);
+	REQUIRE(consumerListener.sentPackets.size() == 1u);
+
+	const uint16_t handoffSeq = consumerListener.sentPackets.back().sequenceNumber;
+
+	// The viewer acknowledges the handoff through an RR but never asks (a
+	// healthy viewer that decoded fine does not PLI). No observer ask can be
+	// issued before resolution because it would refresh the last-ask anchor
+	// and switch the episode onto the 3s quiet path; the ack-before-PLI case
+	// (RR ack then immediate ask stays first-frame) is covered by the
+	// "keeps an unacknowledged key frame handoff" test above.
+	RTC::RTCP::ReceiverReport report;
+	report.SetSsrc(ConsumerSsrc);
+	report.SetLastSeq(handoffSeq);
+	consumer.ReceiveRtcpReceiverReport(&report);
+
+	// A second RR inside the grace window must still NOT resolve.
+	RTC::RTCP::ReceiverReport early;
+	early.SetSsrc(ConsumerSsrc);
+	early.SetLastSeq(handoffSeq);
+	consumer.ReceiveRtcpReceiverReport(&early);
+
+	// After the grace window a fresh RR resolves the episode for a viewer that
+	// never asked, and only from then on is an ask a regular (non-first-frame)
+	// ask.
+	std::this_thread::sleep_for(std::chrono::milliseconds(FirstFrameGraceWindowMsForTest));
+
+	RTC::RTCP::ReceiverReport late;
+	late.SetSsrc(ConsumerSsrc);
+	late.SetLastSeq(handoffSeq);
+	consumer.ReceiveRtcpReceiverReport(&late);
+
+	consumer.ReceiveKeyFrameRequest(pli.GetMessageType(), pli.GetMediaSsrc());
+	REQUIRE(consumerListener.keyFrameRequests == 1u);
 	CHECK_FALSE(consumerListener.lastFirstFrameRequest);
 }
 

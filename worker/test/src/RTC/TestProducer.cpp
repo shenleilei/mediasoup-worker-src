@@ -695,6 +695,56 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Producer clamps viewer first-frame asks under delay=0 (legacy/rollback)",
+  "[producer][keyframe][cadence][first-frame][viewer]")
+{
+	Channel::ChannelSocket channel(NoChannelMessage, nullptr, IgnoreChannelWrite, nullptr);
+	RTC::Shared shared(new ChannelMessageRegistrator(), new Channel::ChannelNotifier(&channel));
+	TestProducerListener listener;
+	flatbuffers::FlatBufferBuilder builder;
+	// delay=0 is the legacy/rollback default (Constants kVideoKeyFrameRequestDelayMs):
+	// the release estimate is always "overdue", which used to bypass the
+	// force-spacing entirely and turn every viewer PLI into a 1:1 publisher
+	// key-frame request (round-3 review R15 probe: forcedTotal 121).
+	const auto* request =
+	  BuildProduceRequest(builder, /*keyFrameRequestDelay=*/0u, /*withPliFeedback=*/true, "video/VP8");
+	RTC::Producer producer(&shared, "producer-keyframe-first-frame-delay0", &listener, request);
+
+	// A key frame first packet creates the stream without any request.
+	Vp8MediaPacket keyFrame(1u, 90000u, true);
+	CHECK(
+	  producer.ReceiveRtpPacket(keyFrame.packet.get()) ==
+	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	REQUIRE(listener.rtpStreams.size() == 1u);
+	REQUIRE(listener.sentRtcpPackets.size() == 0u);
+
+	// An internal first-frame ask with no baseline is forwarded immediately
+	// (legacy behavior preserved: a brand-new consumer never waits).
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/false, /*firstFrameRequest=*/true);
+	REQUIRE(listener.sentRtcpPackets.size() == 1u);
+
+	// A viewer first-frame ask right after must be clamped by the 500ms viewer
+	// spacing even though delay=0 always looks "overdue": without the guard
+	// this becomes a second immediate publisher request (1:1 amplification).
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+
+	// Also once the viewer spacing elapses (delay=0 has no release window, so
+	// the schedule is always "overdue"), a viewer ask must NOT turn into a
+	// second publisher request: the overdue baseline folds into the pending
+	// request path where the manager de-duplicates it. 1:1 amplification gone.
+	std::this_thread::sleep_for(std::chrono::milliseconds(550u));
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	uv_run(DepLibUV::GetLoop(), UV_RUN_NOWAIT);
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+
+	// A second viewer ask right after folds the same way.
+	producer.RequestKeyFrame(MappedSsrc, /*fromViewerRtcp=*/true, /*firstFrameRequest=*/true);
+	CHECK(listener.sentRtcpPackets.size() == 1u);
+}
+
+TEST_CASE(
   "Producer first-frame decision classifies fold/force without timers",
   "[producer][keyframe][cadence][first-frame][early-pass][decision]")
 {
