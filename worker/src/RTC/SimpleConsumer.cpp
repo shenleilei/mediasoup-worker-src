@@ -1281,14 +1281,14 @@ namespace RTC
 
 	void SimpleConsumer::MarkFirstFrameUnconfirmed()
 	{
-		this->firstFrameUnconfirmed            = true;
-		this->firstFrameUnconfirmedAsks        = 0u;
-		this->firstFrameUnconfirmedSinceMs     = DepLibUV::GetTimeMs();
+		this->firstFrameUnconfirmed        = true;
+		this->firstFrameUnconfirmedAsks    = 0u;
+		this->firstFrameUnconfirmedSinceMs = DepLibUV::GetTimeMs();
 		// Seeded to 0 ("no viewer ask yet"): an episode whose viewer has never
 		// asked must not be resolved as quiet on the first RR that acks the
 		// handoff -- the viewer's very next PLI may already be in flight
 		// (round-2 review R8, ack-before-PLI ordering).
-		this->firstFrameUnconfirmedLastAskMs   = 0u;
+		this->firstFrameUnconfirmedLastAskMs     = 0u;
 		this->firstFrameUnconfirmedConfirmedAtMs = 0u;
 		// A key frame handed before this point cannot confirm a new episode.
 		this->syncKeyFrameHanded = false;
@@ -1349,9 +1349,7 @@ namespace RTC
 
 		// R21.1: print 0 (not worker uptime) when the episode had no viewer ask.
 		const uint64_t lastAskAgoMs =
-		  this->firstFrameUnconfirmedLastAskMs != 0u
-		    ? nowMs - this->firstFrameUnconfirmedLastAskMs
-		    : 0u;
+		  this->firstFrameUnconfirmedLastAskMs != 0u ? nowMs - this->firstFrameUnconfirmedLastAskMs : 0u;
 
 		MS_EVIDENCE_INFO(
 		  "consumer first-frame confirmation resolved [consumerId:%s, producerId:%s, syncKeyFrameSeq:%" PRIu32

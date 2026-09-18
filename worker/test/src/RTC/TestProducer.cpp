@@ -713,8 +713,7 @@ TEST_CASE(
 	// A key frame first packet creates the stream without any request.
 	Vp8MediaPacket keyFrame(1u, 90000u, true);
 	CHECK(
-	  producer.ReceiveRtpPacket(keyFrame.packet.get()) ==
-	  RTC::Producer::ReceiveRtpPacketResult::MEDIA);
+	  producer.ReceiveRtpPacket(keyFrame.packet.get()) == RTC::Producer::ReceiveRtpPacketResult::MEDIA);
 	REQUIRE(listener.rtpStreams.size() == 1u);
 	REQUIRE(listener.sentRtcpPackets.size() == 0u);
 

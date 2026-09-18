@@ -1180,8 +1180,7 @@ namespace RTC
 		// 121 with delay=0 vs 1 with delay=5000). Internal asks keep the legacy
 		// ordering so a brand-new consumer never waits out the window.
 		FirstFrameAction action;
-		if (fromViewerRtcp && lastForceAtMs != 0u &&
-		    nowMs - lastForceAtMs < KeyFrameFirstFrameViewerSpacingMs)
+		if (fromViewerRtcp && lastForceAtMs != 0u && nowMs - lastForceAtMs < KeyFrameFirstFrameViewerSpacingMs)
 		{
 			action = FirstFrameAction::FOLD;
 		}
